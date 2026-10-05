@@ -145,7 +145,13 @@ def cmd_upload(settings: Settings, args: argparse.Namespace) -> int:
     if job.state.get("options", {}).get("offline"):
         print("offline 샘플 테스트 영상은 업로드하지 않습니다.")
         return 2
-    pipeline.resume(job.id, upload=True)
+    if args.privacy:
+        # 이번 업로드에만 적용 (config.yaml 은 그대로)
+        settings.youtube.publish_mode = "private" if args.privacy == "private" else args.privacy
+        settings.youtube.privacy_status = "private"
+    ctx = pipeline.resume(job.id, upload=True)
+    up = ctx.state.get("upload") or {}
+    print(f"\n✅ 업로드 완료: {up.get('url')} ({up.get('privacy_status')}, publishAt={up.get('publish_at') or '-'})")
     return 0
 
 
@@ -274,6 +280,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("upload", help="제작 완료 영상 업로드")
     p.add_argument("job_id", nargs="?")
+    p.add_argument("--privacy", choices=["private", "scheduled", "public"], help="이번 업로드의 공개 방식 (기본: config)")
     p.set_defaults(func=cmd_upload)
 
     p = sub.add_parser("auth", help="YouTube OAuth 인증")
