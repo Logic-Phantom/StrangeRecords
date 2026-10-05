@@ -44,6 +44,8 @@ class ScriptGenerator:
             research=format_research(research),
             min_chars=cfg.min_chars,
             max_chars=cfg.max_chars,
+            min_sentences=cfg.sentence_range[0],
+            max_sentences=cfg.sentence_range[1],
             min_seconds=int(cfg.min_seconds),
             max_seconds=int(cfg.max_seconds),
             banned_phrases=", ".join(cfg.banned_phrases),

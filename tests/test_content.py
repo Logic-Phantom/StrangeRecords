@@ -121,3 +121,28 @@ def test_publish_plan_private(settings):
     settings.youtube.publish_mode = "private"
     plan = plan_publish(settings, datetime(2026, 10, 5, 10, 0, tzinfo=KST))
     assert plan.privacy_status == "private" and plan.publish_at is None
+
+
+class _Overloaded(Exception):
+    code = 503
+
+
+def test_model_fallback_on_overload():
+    from types import SimpleNamespace
+
+    from app.config.settings import GeminiConfig, RetryConfig
+
+    calls = []
+
+    def generate_content(model, contents, config):
+        calls.append(model)
+        if model == "primary":
+            raise _Overloaded("high demand")
+        return SimpleNamespace(text="ok")
+
+    client = GeminiClient(GeminiConfig(model="primary", fallback_models=["backup"], max_retries=2), "k",
+                          RetryConfig(delays=[(0, 0)]))
+    client._client = SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
+    assert client.generate("hi") == "ok"
+    assert calls == ["primary", "primary", "backup"] and client.active_model == "backup"
+    assert client.generate("again") == "ok" and calls[-1] == "backup"  # 전환된 모델 유지

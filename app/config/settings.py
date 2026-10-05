@@ -24,6 +24,7 @@ class AppConfig(BaseModel):
 
 class GeminiConfig(BaseModel):
     model: str
+    fallback_models: list[str] = Field(default_factory=list)
     temperature: float = 0.8
     max_output_tokens: int = 8192
     max_retries: int = 3
@@ -71,6 +72,10 @@ class ScriptConfig(BaseModel):
     min_scenes: int = 5
     max_scenes: int = 9
     banned_phrases: list[str] = Field(default_factory=list)
+    # 검증 허용 범위 = 목표 범위 x 비율 (긴 대본은 음성 단계에서 말하기 속도를 올려 맞춘다)
+    hard_min_ratio: float = 0.85
+    hard_max_ratio: float = 1.2
+    avg_sentence_chars: int = 25
 
     @property
     def min_chars(self) -> int:
@@ -79,6 +84,18 @@ class ScriptConfig(BaseModel):
     @property
     def max_chars(self) -> int:
         return int(self.max_seconds * self.chars_per_second)
+
+    @property
+    def hard_min_chars(self) -> int:
+        return int(self.min_chars * self.hard_min_ratio)
+
+    @property
+    def hard_max_chars(self) -> int:
+        return int(self.max_chars * self.hard_max_ratio)
+
+    @property
+    def sentence_range(self) -> tuple[int, int]:
+        return max(round(self.min_chars / self.avg_sentence_chars), 1), max(round(self.max_chars / self.avg_sentence_chars), 2)
 
 
 class VoiceConfig(BaseModel):

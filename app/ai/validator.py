@@ -29,13 +29,18 @@ def estimate_seconds(text: str, chars_per_second: float) -> float:
 def validate_script(draft: ScriptDraft, cfg: ScriptConfig) -> None:
     problems: list[str] = []
     n = speech_chars(draft.script)
-    if n < cfg.min_chars:
+    target = (cfg.min_chars + cfg.max_chars) // 2
+    if n < cfg.hard_min_chars:
+        add = target - n
         problems.append(
-            f"script 가 너무 짧다: {n}자 (공백/문장부호 제외). {cfg.min_chars}~{cfg.max_chars}자로 늘려라."
+            f"script 가 너무 짧다: {n}자 (공백/문장부호 제외, 목표 {cfg.min_chars}~{cfg.max_chars}자). "
+            f"약 {add}자, 즉 {max(round(add / cfg.avg_sentence_chars), 1)}문장 정도를 추가하라."
         )
-    if n > cfg.max_chars:
+    if n > cfg.hard_max_chars:
+        cut = n - target
         problems.append(
-            f"script 가 너무 길다: {n}자 (공백/문장부호 제외). {cfg.min_chars}~{cfg.max_chars}자로 줄여라."
+            f"script 가 너무 길다: {n}자 (공백/문장부호 제외, 목표 {cfg.min_chars}~{cfg.max_chars}자). "
+            f"약 {cut}자, 즉 {max(round(cut / cfg.avg_sentence_chars), 1)}문장 정도를 삭제하거나 문장을 짧게 줄여라."
         )
     if not draft.hook.strip():
         problems.append("hook 이 비어 있다.")

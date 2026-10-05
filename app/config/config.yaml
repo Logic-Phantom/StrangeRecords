@@ -18,7 +18,11 @@ app:
 # .env 의 GEMINI_MODEL 이 있으면 그 값이 우선한다.
 # ---------------------------------------------------------------------
 gemini:
-  model: "gemini-2.5-flash"
+  # 사용 가능한 모델 확인: python -m app.main models
+  # gemini-flash-latest = 최신 Flash 모델 별칭 (무료 티어 지원)
+  model: "gemini-flash-latest"
+  # 기본 모델이 과부하(503)/한도 초과(429)면 순서대로 전환
+  fallback_models: ["gemini-2.5-flash", "gemini-flash-lite-latest"]
   temperature: 0.8
   max_output_tokens: 8192
   max_retries: 3          # API 오류(429/5xx/네트워크) 재시도 횟수

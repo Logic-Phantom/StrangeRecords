@@ -10,11 +10,14 @@ from pydantic import BaseModel, ValidationError
 from app.ai.json_parser import JSONParseError, parse_json
 from app.config.settings import GeminiConfig, RetryConfig
 from app.utils.logger import get_logger
-from app.utils.retry import NonRetryableError, retry_call
+from app.utils.retry import NonRetryableError, RetryError, retry_call
 
 logger = get_logger("gemini")
 
 M = TypeVar("M", bound=BaseModel)
+
+# 다른 모델로 전환할 오류: 한도 초과(429), 서버 오류/과부하(500/503/504)
+FALLBACK_CODES = {429, 500, 503, 504}
 
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 
@@ -50,6 +53,7 @@ class GeminiClient:
             http_options=types.HttpOptions(timeout=config.request_timeout * 1000),
         )
         self.call_count = 0
+        self._active = 0
 
     # ------------------------------------------------------------------ text
     def generate(
@@ -72,12 +76,10 @@ class GeminiClient:
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
 
-        def _call() -> str:
+        def _call(model: str) -> str:
             self.call_count += 1
             try:
-                response = self._client.models.generate_content(
-                    model=self.config.model, contents=prompt, config=gen_config
-                )
+                response = self._client.models.generate_content(model=model, contents=prompt, config=gen_config)
             except Exception as exc:
                 code = getattr(exc, "code", None)
                 # 잘못된 키/모델명/요청 형식은 재시도해도 같으므로 즉시 실패
@@ -94,13 +96,42 @@ class GeminiClient:
                 raise GeminiError(f"빈 응답 (finish_reason={reason})")
             return text
 
-        return retry_call(
-            _call,
-            step="Gemini API",
-            max_attempts=self.config.max_retries,
-            delays=self.retry.delays,
-            retry_on=(Exception,),
-        )
+        # 기본 모델이 과부하(503)/한도 초과(429)로 계속 실패하면 config 의 fallback_models 순서로 전환
+        models = self.models
+        start = self._active
+        for i in range(start, len(models)):
+            model = models[i]
+            try:
+                text = retry_call(
+                    lambda: _call(model),
+                    step=f"Gemini API ({model})",
+                    max_attempts=self.config.max_retries,
+                    delays=self.retry.delays,
+                    retry_on=(Exception,),
+                )
+                if i != self._active:
+                    logger.warning("Gemini 모델 전환: %s → %s (이번 실행 동안 유지)", models[self._active], model)
+                    self._active = i
+                return text
+            except RetryError as exc:
+                code = getattr(exc.last_error, "code", None)
+                if code in FALLBACK_CODES and i + 1 < len(models):
+                    logger.warning("%s 사용 불가(%s) → 다음 모델 %s 시도", model, code, models[i + 1])
+                    continue
+                raise
+        raise GeminiError("사용 가능한 Gemini 모델 없음")
+
+    @property
+    def models(self) -> list[str]:
+        ordered: list[str] = []
+        for name in [self.config.model, *self.config.fallback_models]:
+            if name and name not in ordered:
+                ordered.append(name)
+        return ordered
+
+    @property
+    def active_model(self) -> str:
+        return self.models[self._active]
 
     # ------------------------------------------------------------------ json
     def generate_json(
