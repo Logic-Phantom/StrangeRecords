@@ -1,0 +1,142 @@
+{
+  "topic": {
+    "title": "메리 셀레스트호의 미스터리",
+    "topic": "1872년 대서양에서 승선원 10명이 모두 사라진 채 발견된 메리 셀레스트호",
+    "category": "unsolved_mystery",
+    "keywords": ["메리 셀레스트호", "유령선", "1872년", "대서양", "실종"],
+    "summary": "1872년 12월 대서양에서 승선원 없이 표류하던 메리 셀레스트호가 발견됐다. 식량과 화물은 남아 있었고 구명보트만 사라졌다.",
+    "truth_status": "FACT",
+    "search_terms_ko": ["메리 셀레스트호"],
+    "search_terms_en": ["Mary Celeste"],
+    "hook_idea": "사람만 사라진 채 발견된 배"
+  },
+  "research": {
+    "summary": "메리 셀레스트호는 1872년 11월 뉴욕을 떠나 제노바로 향하던 미국 상선으로, 12월 아조레스 제도 인근에서 데이 그라티아호에 의해 승선원 없이 표류하는 상태로 발견되었다. 승선원 10명은 끝내 발견되지 않았다.",
+    "truth_status": "FACT",
+    "facts": [
+      {"statement": "1872년 12월 대서양에서 승선원 없이 표류하던 상태로 발견되었다.", "status": "FACT", "source_index": 0},
+      {"statement": "선장 벤저민 브리그스와 아내, 두 살 딸, 선원 7명 등 10명이 타고 있었다.", "status": "FACT", "source_index": 0},
+      {"statement": "6개월분의 식량과 물이 남아 있었고 알코올 화물 대부분이 그대로였다.", "status": "FACT", "source_index": 0},
+      {"statement": "구명보트가 사라져 있었다.", "status": "FACT", "source_index": 0},
+      {"statement": "식탁 위 따뜻한 음식 이야기는 아서 코난 도일의 1884년 소설에서 퍼진 허구다.", "status": "FACT", "source_index": 0},
+      {"statement": "알코올 증기 폭발을 우려해 일시 대피했다는 가설이 있다.", "status": "UNCONFIRMED", "source_index": 0}
+    ],
+    "open_questions": ["승선원들이 배를 떠난 정확한 이유"],
+    "caution": "가설은 가설로 표현한다.",
+    "sources": [
+      {"title": "Wikipedia(ko) - 메리 셀레스트호", "url": "https://ko.wikipedia.org/wiki/%EB%A9%94%EB%A6%AC_%EC%85%80%EB%A0%88%EC%8A%A4%ED%8A%B8%ED%98%B8", "lang": "ko", "provider": "wikipedia", "extract": ""},
+      {"title": "Wikipedia(en) - Mary Celeste", "url": "https://en.wikipedia.org/wiki/Mary_Celeste", "lang": "en", "provider": "wikipedia", "extract": ""}
+    ]
+  },
+  "content": {
+    "title": "사람만 사라진 배, 메리 셀레스트호",
+    "hook": "1872년 12월, 대서양 한가운데서 사람이 한 명도 없는 배가 발견됐습니다.",
+    "script": "",
+    "ending": "열 명의 행방은 지금도 확인되지 않았습니다.",
+    "comment_prompt": "여러분은 그들이 왜 배를 떠났다고 생각하나요? 댓글로 알려주세요.",
+    "truth_status": "FACT",
+    "truth_notice": "",
+    "loop": false,
+    "description": "1872년 대서양에서 승선원 10명이 모두 사라진 채 발견된 메리 셀레스트호. 남겨진 단서와 널리 퍼진 오해, 그리고 유력한 가설을 정리했습니다. 승선원들이 배를 떠난 이유는 지금도 확인되지 않았습니다.\n여러분의 생각을 댓글로 남겨주세요!",
+    "hashtags": ["#미스터리", "#메리셀레스트호", "#유령선", "#미제사건", "#역사", "#Shorts"],
+    "tags": ["메리 셀레스트호", "Mary Celeste", "유령선", "미스터리", "미제사건", "해양 미스터리", "기묘한 기록"],
+    "scenes": [
+      {
+        "scene_number": 1,
+        "narration": "1872년 12월, 대서양 한가운데서 사람이 한 명도 없는 배가 발견됐습니다.",
+        "visual": "안개 낀 바다 위 오래된 범선",
+        "visual_type": "video",
+        "visual_prompt": "An old 19th century sailing ship drifting alone on a foggy dark Atlantic ocean, vertical composition, cinematic",
+        "visual_search_query": "foggy ocean ship",
+        "alt_search_queries": ["sailing ship sea", "dark ocean waves"],
+        "effect": "zoom_in",
+        "sfx": "impact",
+        "emphasis_words": ["한", "명도"]
+      },
+      {
+        "scene_number": 2,
+        "narration": "배의 이름은 메리 셀레스트호. 선장 가족과 선원까지 모두 열 명이 타고 있었죠.",
+        "visual": "범선 갑판과 돛",
+        "visual_type": "video",
+        "visual_prompt": "Wooden deck of an old sailing ship with ropes and sails, moody light",
+        "visual_search_query": "old sailing ship deck",
+        "alt_search_queries": ["ship sails wind", "wooden ship"],
+        "effect": "pan_up",
+        "sfx": null,
+        "emphasis_words": ["메리 셀레스트호"]
+      },
+      {
+        "scene_number": 3,
+        "narration": "그런데 배 안에는 여섯 달 치 식량과 물이 그대로 남아 있었고, 화물인 알코올 통도 대부분 멀쩡했습니다.",
+        "visual": "어두운 선창의 나무 통들",
+        "visual_type": "image",
+        "visual_prompt": "Old wooden barrels stacked in a dark ship hold, dim lantern light",
+        "visual_search_query": "wooden barrels dark",
+        "alt_search_queries": ["old barrels", "ship cargo hold"],
+        "effect": "zoom_out",
+        "sfx": null,
+        "emphasis_words": ["그대로"]
+      },
+      {
+        "scene_number": 4,
+        "narration": "사라진 건 단 하나, 구명보트뿐이었습니다. 마지막 항해 기록은 발견 약 열흘 전에 멈춰 있었죠.",
+        "visual": "파도 위의 작은 보트",
+        "visual_type": "video",
+        "visual_prompt": "A small empty rowing boat on rough ocean waves at dusk",
+        "visual_search_query": "small boat ocean waves",
+        "alt_search_queries": ["rowing boat sea", "stormy sea"],
+        "effect": "zoom_in",
+        "sfx": "heartbeat",
+        "emphasis_words": ["구명보트뿐이었습니다"]
+      },
+      {
+        "scene_number": 5,
+        "narration": "그런데 이상한 건 지금부터입니다. 식탁 위 따뜻한 차와 먹다 남은 식사로 유명한 이 이야기는 사실이 아닙니다.",
+        "visual": "어두운 식탁 위 찻잔",
+        "visual_type": "image",
+        "visual_prompt": "A cup of tea on an old wooden table in a dark cabin, steam rising, candle light",
+        "visual_search_query": "tea cup dark table",
+        "alt_search_queries": ["candle dark table", "old cabin interior"],
+        "effect": "zoom_in",
+        "sfx": "whoosh",
+        "emphasis_words": ["사실이"]
+      },
+      {
+        "scene_number": 6,
+        "narration": "그 장면은 셜록 홈즈의 작가 코난 도일의 소설에서 퍼진 것이었죠.",
+        "visual": "오래된 책과 펜",
+        "visual_type": "image",
+        "visual_prompt": "Old book and fountain pen on a desk, vintage writing, warm lamp light",
+        "visual_search_query": "old book writing",
+        "alt_search_queries": ["vintage book", "fountain pen paper"],
+        "effect": "pan_right",
+        "sfx": null,
+        "emphasis_words": ["소설"]
+      },
+      {
+        "scene_number": 7,
+        "narration": "알코올 증기 폭발이 두려워 잠시 보트로 피했다는 가설이 유력하지만, 그들의 행방은 지금도 모릅니다.",
+        "visual": "밤바다의 안개",
+        "visual_type": "video",
+        "visual_prompt": "Dark night ocean with thick fog, mysterious atmosphere",
+        "visual_search_query": "night sea fog",
+        "alt_search_queries": ["dark ocean night", "foggy sea"],
+        "effect": "zoom_out",
+        "sfx": "suspense",
+        "emphasis_words": ["확인되지"]
+      },
+      {
+        "scene_number": 8,
+        "narration": "여러분은 그들이 왜 배를 떠났다고 생각하나요? 댓글로 알려주세요.",
+        "visual": "수평선 너머로 사라지는 배",
+        "visual_type": "video",
+        "visual_prompt": "Silhouette of a sailing ship on the horizon at sunset",
+        "visual_search_query": "ship horizon sunset",
+        "alt_search_queries": ["ocean horizon", "sea sunset"],
+        "effect": "static",
+        "sfx": null,
+        "emphasis_words": ["댓글로"]
+      }
+    ]
+  }
+}

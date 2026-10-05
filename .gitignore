@@ -1,0 +1,45 @@
+# ===== 비밀 정보 (절대 커밋 금지) =====
+.env
+.env.*
+!.env.example
+token.json
+credentials.json
+client_secret*.json
+*.key
+*.pem
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# ===== 생성 데이터 =====
+data/database.sqlite
+data/database.sqlite-*
+data/topics/*
+data/scripts/*
+data/metadata/*
+data/sources/*
+!data/**/.gitkeep
+output/**
+!output/**/
+!output/**/.gitkeep
+logs/*
+!logs/.gitkeep
+models/
+
+# 로컬 자료 (라이선스 확인된 자료만 직접 관리)
+assets/images/*
+assets/videos/*
+assets/fonts/*
+!assets/**/.gitkeep
+
+# ===== IDE / OS =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.claude/settings.local.json

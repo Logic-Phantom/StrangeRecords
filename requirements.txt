@@ -1,0 +1,30 @@
+# AI (Gemini 전용)
+google-genai>=1.0
+
+# 설정 / 모델
+python-dotenv>=1.0
+PyYAML>=6.0
+pydantic>=2.6
+
+# HTTP (Pexels / Pixabay / Wikipedia)
+requests>=2.31
+
+# 음성
+edge-tts>=6.1
+
+# 자막 (faster-whisper 는 PyAV 를 포함하므로 ffprobe 가 없을 때 미디어 분석에도 사용)
+faster-whisper>=1.0
+
+# 자막 이미지 / 로컬 placeholder 이미지 렌더링
+Pillow>=10.0
+
+# 시스템 FFmpeg 가 PATH 에 없을 때 사용하는 FFmpeg 바이너리 (fallback)
+imageio-ffmpeg>=0.5
+
+# YouTube Data API v3
+google-api-python-client>=2.100
+google-auth-oauthlib>=1.2
+google-auth-httplib2>=0.2
+
+# Windows 에는 시간대 DB 가 없으므로 zoneinfo(Asia/Seoul)용 tzdata 필요
+tzdata; sys_platform == "win32"

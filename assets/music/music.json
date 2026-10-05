@@ -1,0 +1,29 @@
+[
+  {
+    "file": "dark_ambient_01.m4a",
+    "title": "Dark Ambient Drone",
+    "artist": "StrangeRecords (synth)",
+    "source": "self-generated",
+    "license": "CC0 (프로젝트 스크립트로 직접 합성)",
+    "url": "",
+    "mood": "dark"
+  },
+  {
+    "file": "mystery_pulse_01.m4a",
+    "title": "Mystery Pulse",
+    "artist": "StrangeRecords (synth)",
+    "source": "self-generated",
+    "license": "CC0 (프로젝트 스크립트로 직접 합성)",
+    "url": "",
+    "mood": "mystery"
+  },
+  {
+    "file": "curious_light_01.m4a",
+    "title": "Curious Light",
+    "artist": "StrangeRecords (synth)",
+    "source": "self-generated",
+    "license": "CC0 (프로젝트 스크립트로 직접 합성)",
+    "url": "",
+    "mood": "light"
+  }
+]

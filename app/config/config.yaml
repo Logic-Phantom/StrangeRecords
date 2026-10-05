@@ -1,0 +1,222 @@
+# =====================================================================
+# 기묘한 기록 (StrangeRecords) - AI YouTube Shorts 자동 제작 설정
+# API Key 는 이 파일이 아니라 .env 에 작성한다.
+# =====================================================================
+
+app:
+  name: "기묘한 기록"
+  # development: 업로드 제외 전체 제작 / production: YouTube 업로드까지 실행
+  mode: "development"
+  timezone: "Asia/Seoul"
+  language: "ko"
+  # 성공한 작업의 중간 파일(output/work/<job_id>) 삭제 여부
+  cleanup_work_files: false
+
+# ---------------------------------------------------------------------
+# Gemini (유일한 AI 엔진). 모델명은 여기 한 곳에서만 관리한다.
+# 무료 티어 모델/한도는 변경될 수 있으므로 https://ai.google.dev/gemini-api/docs/rate-limits 확인.
+# .env 의 GEMINI_MODEL 이 있으면 그 값이 우선한다.
+# ---------------------------------------------------------------------
+gemini:
+  model: "gemini-2.5-flash"
+  temperature: 0.8
+  max_output_tokens: 8192
+  max_retries: 3          # API 오류(429/5xx/네트워크) 재시도 횟수
+  json_retries: 2         # JSON 파싱/검증 실패 시 재요청 횟수 (무한 재시도 금지)
+  request_timeout: 120    # 초
+  # 자료 조사 단계에서 Google Search grounding 사용 (무료 티어 지원 여부 확인 후 사용)
+  use_google_search: false
+
+# ---------------------------------------------------------------------
+# 콘텐츠 카테고리
+# ---------------------------------------------------------------------
+categories:
+  - id: "unsolved_mystery"
+    name: "미제 사건 및 현실 미스터리"
+    examples: ["미제 사건", "실종 사건", "사라진 사람", "이상한 사건", "설명되지 않은 사건"]
+    guideline: "실제 사건이므로 공식 기록으로 확인된 사실(FACT)과 추측/가설(UNCONFIRMED)을 반드시 구분한다. 피해자와 유가족을 존중하고 선정적 묘사를 피한다."
+    bgm_mood: "dark"
+  - id: "strange_phenomena"
+    name: "기묘한 현상 및 도시전설"
+    examples: ["세계의 기묘한 현상", "도시전설", "이상한 장소", "인터넷 괴담", "미스터리 현상"]
+    guideline: "도시전설/괴담은 실제 사건처럼 단정하지 않고 '~라는 이야기가 전해진다'처럼 표현한다. 과학적으로 설명된 현상은 그 설명도 함께 전한다."
+    bgm_mood: "dark"
+  - id: "legendary_creatures"
+    name: "희귀/전설의 생물"
+    examples: ["크라켄", "심해 생물", "전설 속 괴수", "미확인 생명체", "고대 생물"]
+    guideline: "전설/신화 속 생물은 LEGEND 로, 실존 생물은 FACT 로 명확히 표시한다. 실존 생물의 수치/생태 정보는 확인된 자료 기준으로만 말한다."
+    bgm_mood: "mystery"
+  - id: "brain_teaser"
+    name: "뇌 자극 / 심리테스트 / 밸런스 게임"
+    examples: ["심리테스트", "선택형 문제", "밸런스 게임", "착시", "추리", "두뇌 테스트"]
+    guideline: "시청자가 직접 답을 고르도록 유도하고 댓글 참여를 요청한다. 심리테스트는 재미용이며 과학적 진단이 아님을 밝힌다. 정답이 있는 문제는 정답과 풀이를 정확히 제시한다."
+    bgm_mood: "light"
+  - id: "hidden_history"
+    name: "역사의 은밀한 이야기"
+    examples: ["잘 알려지지 않은 역사", "역사 속 반전", "유명 인물의 숨겨진 이야기", "역사적 사건의 뒷이야기", "의외의 역사적 사실"]
+    guideline: "기록으로 확인된 사실 위주로 작성하고, 일화/야사/속설은 그렇게 표시한다. 연도와 인물명을 정확히 쓴다."
+    bgm_mood: "mystery"
+
+# ---------------------------------------------------------------------
+# 주제 선정 / 중복 방지
+# ---------------------------------------------------------------------
+topic:
+  candidate_count: 8
+  max_generation_rounds: 3     # 모든 후보가 중복이면 새로 생성하는 최대 횟수
+  history_limit: 300           # 프롬프트/중복 검사에 사용하는 최근 주제 수
+  category_strategy: "rotate"  # rotate(가장 오래 안 쓴 카테고리) | random
+
+duplicate:
+  # 키워드 겹침(overlap coefficient)이 이 값 이상이면 즉시 중복
+  keyword_threshold: 0.67
+  # 문자 bigram 유사도가 이 값 이상이면 즉시 중복
+  text_threshold: 0.6
+  # 이 점수 이상인 기존 주제는 Gemini 의미 판단 대상(shortlist)
+  semantic_min_score: 0.2
+  semantic_check: true
+  semantic_top_k: 5
+
+research:
+  enabled: true
+  provider: "wikipedia"
+  languages: ["ko", "en"]
+  max_sources: 4
+  max_chars_per_source: 3000
+  user_agent: "StrangeRecordsBot/1.0 (YouTube Shorts research; contact: repository owner)"
+
+# ---------------------------------------------------------------------
+# 대본
+# ---------------------------------------------------------------------
+script:
+  min_seconds: 40
+  max_seconds: 54
+  # 한국어 Edge TTS 실측 발화 속도 (공백/문장부호 제외 글자 수, rate +5% 기준 약 4.9자/초)
+  chars_per_second: 5.0
+  min_scenes: 5
+  max_scenes: 9
+  banned_phrases: ["충격 실화", "경악", "소름 돋는 진실 100%", "절대 클릭"]
+
+# ---------------------------------------------------------------------
+# 음성 (Edge TTS)
+# ---------------------------------------------------------------------
+voice:
+  provider: "edge_tts"
+  language: "ko-KR"
+  voice: "ko-KR-SunHiNeural"   # 또는 ko-KR-InJoonNeural
+  rate: "+5%"
+  pitch: "+0Hz"
+  lead_in: 0.2                 # 첫 음성 전 무음(초)
+  scene_gap: 0.2               # Scene 사이 무음(초)
+  max_rate_boost: 20           # 길이 초과 시 최대 추가 속도(%)
+
+# ---------------------------------------------------------------------
+# 시각자료
+# ---------------------------------------------------------------------
+assets:
+  # 우선순위: pexels → pixabay → local(assets/images, assets/videos) → ai_image → procedural
+  providers: ["pexels", "pixabay", "local", "ai_image", "procedural"]
+  prefer_video: true
+  per_page: 15
+  min_short_side: 720
+  max_download_mb: 80
+  request_timeout: 30
+  ai_image:
+    enabled: false              # Gemini 이미지 모델 (무료 티어 지원 여부 확인 후 활성화)
+    model: "gemini-2.5-flash-image"
+
+# ---------------------------------------------------------------------
+# 자막 (faster-whisper)
+# ---------------------------------------------------------------------
+subtitle:
+  engine: "faster_whisper"
+  model_size: "small"          # tiny | base | small | medium | large-v3
+  device: "auto"               # auto | cpu | cuda
+  compute_type: "int8"
+  # script: 대본 텍스트 + Whisper 타이밍 (오탈자 없음) / whisper: 인식 결과 그대로
+  text_source: "script"
+  max_chars: 11                # 자막 한 덩어리 최대 글자 수
+  max_words: 3
+  font_path: ""                # 비우면 OS 한글 폰트 자동 탐색 (assets/fonts 우선)
+  font_size: 92
+  position_y: 0.70             # 화면 높이 대비 자막 중심 위치 (하단 중앙)
+  color: "#FFFFFF"
+  highlight_color: "#FFD43B"
+  stroke_color: "#000000"
+  stroke_width: 8
+  show_title: true             # 상단에 영상 제목 고정 표시
+  title_font_size: 64
+  title_position_y: 0.13
+
+# ---------------------------------------------------------------------
+# 영상 (FFmpeg)
+# ---------------------------------------------------------------------
+video:
+  width: 1080
+  height: 1920
+  fps: 30
+  crf: 20
+  preset: "medium"
+  audio_bitrate: "192k"
+  audio_sample_rate: 48000
+  transition: "fade"           # fade(xfade) | cut
+  transition_type: "fade"      # xfade 효과 이름 (fade, fadeblack, slideleft, ...)
+  transition_duration: 0.3
+  zoom_amount: 0.12            # Ken Burns 확대 비율
+  outro_padding: 0.8           # 마지막 음성 후 여유(초)
+  global_fade: 0.4
+
+audio:
+  bgm_enabled: true
+  bgm_volume: 0.18
+  bgm_ducking: true
+  sfx_enabled: true
+  sfx_volume: 0.55
+  max_sfx: 4
+  loudnorm: true
+  target_lufs: -14
+
+# ---------------------------------------------------------------------
+# 품질 검사 (실패 시 업로드 금지)
+# ---------------------------------------------------------------------
+quality:
+  min_duration: 30
+  max_duration: 60
+  width: 1080
+  height: 1920
+  fps: 30
+  min_file_size_kb: 300
+  max_file_size_mb: 256
+  max_black_ratio: 0.25
+  black_min_duration: 0.5
+
+# ---------------------------------------------------------------------
+# YouTube
+# ---------------------------------------------------------------------
+youtube:
+  privacy_status: "private"    # publish_mode=private 일 때의 공개 상태
+  publish_mode: "scheduled"    # private | scheduled | public
+  publish_time: "12:00"
+  # 영상 완성 시점이 이미 예약 시간을 지났을 때: public_now | next_day | private
+  late_policy: "public_now"
+  min_schedule_margin_minutes: 15
+  category_id: "24"            # Entertainment
+  made_for_kids: false
+  default_language: "ko"
+  contains_synthetic_media: true
+  client_secrets_file: "credentials.json"
+  token_file: "token.json"
+
+schedule:
+  enabled: true
+  daily_count: 1
+  timezone: "Asia/Seoul"
+  generate_time: "10:00"
+  upload_time: "12:00"
+
+retry:
+  max_attempts: 3
+  # 1차 실패 후 5~10초, 2차 실패 후 15~30초 대기
+  delays: [[5, 10], [15, 30]]
+
+logging:
+  level: "INFO"
