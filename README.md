@@ -2,7 +2,7 @@
 
 매일 **새로운 주제 선정 → 자료 조사 → 대본 → 음성 → 시각자료 → 자막 → 편집 → 품질 검사 → YouTube 업로드 → 12:00 예약 공개 → 이력 저장** 을 자동으로 수행하는 Python 프로젝트입니다.
 
-- AI 엔진: **Google Gemini API 하나만 사용** (무료 티어 기준, 모델명은 `config.yaml` 한 곳에서 관리)
+- AI 엔진: **Google Gemini API 하나만 사용** (기본 `gemini-3.5-flash`, 과부하 시 자동 대체 모델 전환, 모델명은 `config.yaml` 한 곳에서 관리)
 - 음성: Edge TTS (무료) · 시각자료: Pexels / Pixabay (무료 API) · 자막: faster-whisper (로컬) · 편집: FFmpeg · DB: SQLite
 - 출력: **1080x1920 · 9:16 · 30fps · H.264 · AAC · MP4**, 한국어 40~60초
 
@@ -60,6 +60,7 @@ bash scripts/setup_macos.sh
 
 - Pexels/Pixabay Key 가 없으면 `assets/images`, `assets/videos` 의 로컬 자료 → 자체 제작 그래픽(Pillow)으로 대체되어 **제작은 멈추지 않습니다**.
 - Gemini 무료 모델/한도가 바뀌면 `python -m app.main models` 로 사용 가능한 모델을 확인하고 `config.yaml` 의 `gemini.model` (또는 `.env` 의 `GEMINI_MODEL`)만 바꾸면 됩니다.
+- 기본 모델이 과부하(503)/한도 초과(429)로 3회 실패하면 `gemini.fallback_models` 순서(`gemini-flash-latest` → `gemini-2.5-flash` → `gemini-flash-lite-latest`)로 자동 전환하고, 그 실행 동안은 전환된 모델을 유지합니다.
 - 하루 Gemini 호출 수: 주제 1 + 중복 판단 1 + 자료 정리 1 + 대본 1 + Scene 1 + 메타데이터 1 ≈ **6회** (+ 검증 실패 시 재요청).
 
 ## 4. 명령어
@@ -72,6 +73,7 @@ python -m app.main topic        # 주제 후보 + 중복 검사 결과 미리보
 python -m app.main history      # 제작 이력
 python -m app.main retry [JOB]  # 실패 작업을 실패한 단계부터 재시도
 python -m app.main upload [JOB] # 제작 완료(rendered) 영상 업로드
+python -m app.main upload --privacy private   # 이번 업로드만 비공개로 (scheduled | public 도 가능)
 python -m app.main auth         # YouTube 최초 OAuth 인증 (token.json 저장)
 python -m app.main setup        # 폴더/DB/기본 BGM·효과음 생성
 python -m app.main doctor       # 환경 점검
@@ -103,7 +105,16 @@ youtube:
 2. OAuth 동의 화면 구성(외부, 테스트 사용자에 본인 계정 추가) → OAuth 클라이언트 ID(**데스크톱 앱**) 생성
 3. `.env` 에 `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET` 입력 (또는 다운로드한 JSON 을 `credentials.json` 으로 저장)
 4. `python -m app.main auth` → 브라우저 로그인/승인 → `token.json` 저장 (이후 자동 갱신)
-5. 먼저 `publish_mode: "private"` 로 업로드 테스트 → 확인 후 `scheduled`
+5. 먼저 `python -m app.main upload --privacy private` 로 비공개 업로드 테스트 → 확인 후 `scheduled`
+
+**로그인 오류 해결**
+
+| 화면 메시지 | 원인 / 해결 |
+|---|---|
+| `액세스 차단됨: (앱)은(는) Google 인증 절차를 완료하지 않았습니다` | OAuth 동의 화면이 "테스트" 상태인데 로그인 계정이 테스트 사용자가 아님 → [Google 인증 플랫폼 → 대상](https://console.cloud.google.com/auth/audience) → **테스트 사용자 추가** 후 `auth` 다시 실행 |
+| `Google에서 확인하지 않은 앱` | 테스트 상태에서는 정상 → **고급 → (앱)(으)로 이동** |
+| `redirect_uri_mismatch` | OAuth 클라이언트가 "웹 애플리케이션" 유형 → **데스크톱 앱** 유형으로 다시 생성 |
+| `YouTube Data API v3 has not been used` | [API 라이브러리](https://console.cloud.google.com/apis/library/youtube.googleapis.com)에서 사용 설정 |
 
 > ⚠️ **API 감사(Audit) 전 제한**: 2020-07-28 이후 생성된 **미인증 API 프로젝트**로 업로드한 영상은 YouTube 정책상 **비공개(private)로 잠깁니다**. 예약/공개 업로드를 하려면 [YouTube API 감사 신청](https://support.google.com/youtube/contact/yt_api_form)을 통과해야 합니다.
 >
@@ -199,10 +210,62 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 
 | 항목 | 상태 |
 |---|---|
-| Gemini 연동 / 대본 / Hook / Scene / 제목 / 설명 / 해시태그 | 구현 + 오프라인 테스트 (실제 호출은 API Key 입력 후 `test` 로 확인) |
-| 주제 DB / 주제 중복 방지 | 구현 + 테스트 |
-| Edge TTS / Whisper / 자막 / FFmpeg / BGM / 효과음 / 1080x1920 출력 | 구현 + 실제 제작 검증 |
-| Pexels / Pixabay / Asset Manager | 구현 (API Key 입력 후 확인 필요, 없으면 fallback 동작 검증됨) |
-| 품질 검사 / SQLite 기록 / Retry / Error Log | 구현 + 테스트 |
-| YouTube OAuth / Upload / 예약 공개 | 구현 (클라이언트 ID 입력 후 `auth` → private 업로드로 확인 필요) |
-| Windows Scheduler / run_daily.bat / README / .env.example | 작성 완료 |
+| Gemini API 연동 / 대본 / Hook / Scene / 제목 / 설명 / 해시태그 | ✅ 실제 Gemini 호출로 제작 확인 |
+| 주제 DB / 주제 중복 방지 | ✅ 구현 + 테스트 (실제 후보 8개 중복 검사 통과) |
+| Edge TTS / Whisper / 자막 / FFmpeg / BGM / 효과음 / 1080x1920 출력 | ✅ 실제 제작 검증 |
+| 품질 검사 / SQLite 기록 / Retry / Error Log | ✅ 실제 실패 → `retry` 로 재개 검증 |
+| YouTube OAuth / Upload | ✅ 비공개 업로드 성공 |
+| YouTube 예약 공개 (12:00) | ⏳ 구현 완료, API 감사 통과 후 확인 필요 (미인증 프로젝트는 비공개로 잠김) |
+| Pexels / Pixabay | ⏳ 구현 완료, API Key 입력 후 확인 필요 (현재는 자체 그래픽으로 대체) |
+| Windows Scheduler / run_daily.bat | ⏳ 스크립트 작성 완료, Windows PC 에서 등록 필요 |
+| README / .env.example | ✅ |
+
+## 13. 작업 내역
+
+### 2026-10-05 — 1차 구축 (`32d5be9`)
+
+**환경 분석**
+- macOS 15.6 (arm64), 기존 Python 3.9 / FFmpeg 없음 / 빈 프로젝트 폴더
+- `uv` 로 Python 3.11 설치 → `.venv` 생성, `requirements.txt` 설치
+- FFmpeg: 시스템 설치 대신 `imageio-ffmpeg` 내장 FFmpeg 7.1 사용 (libx264, AAC, zoompan, xfade 지원 확인), ffprobe 대신 PyAV 로 분석
+
+**구현 (마스터 프롬프트 Phase 1~11)**
+- Phase 1: 폴더 구조, `config.yaml` + `.env` 설정, SQLite(topics/jobs/assets/step_logs), 로그, CLI
+- Phase 2: `GeminiClient` (JSON 모드, 파싱 실패 시 피드백 붙여 최대 2회 재요청), 주제/대본/Scene/메타데이터 생성기, 프롬프트 파일 분리
+- Phase 3: 중복 검사 = 키워드(조사 제거·동의어 정규화) + 문자 bigram 유사도 + Gemini 의미 판단
+- 자료 조사: Wikipedia API(ko/en) → Gemini 가 FACT/UNCONFIRMED/LEGEND 등으로 정리
+- Phase 4: Edge TTS 를 Scene 별로 합성 → 실제 Scene 시간 확정, 길이 초과 시 말하기 속도 자동 상향
+- Phase 5: Pexels → Pixabay → 로컬 → (Gemini 이미지) → 자체 그래픽 순 Asset Manager, 출처/라이선스 기록, 다른 영상에서 쓴 자료 재사용 방지
+- Phase 6: faster-whisper 단어 타이밍 + 대본 텍스트 정렬로 오탈자 없는 Shorts 자막
+- Phase 7: Scene 클립(9:16 crop, Ken Burns) → xfade 전환 → Pillow 자막(강조 단어 색상) + BGM 덕킹 + 효과음 + -14 LUFS
+- 저작권 없는 기본 BGM 3곡 / 효과음 6종을 FFmpeg 로 직접 합성 (CC0)
+- Phase 8: 품질 검사 (길이, 해상도, fps, 코덱, 오디오, 자막, 파일 크기, 검은 화면) 실패 시 업로드 금지
+- Phase 9: YouTube OAuth / 업로드 / 12:00 예약 공개(늦으면 late_policy)
+- Phase 10~11: `run_daily.bat`, 작업 스케줄러 등록 PowerShell, macOS launchd, 하루 1개 정책, 실패 단계부터 재개
+
+**테스트 중 발견해 수정한 문제**
+- 대본 첫 문장을 Whisper `initial_prompt` 로 주면 그 문장을 건너뛰어 첫 자막이 6초에 나옴 → 제거, Scene 경계 겹침 수정, 인식 누락 시 음성 길이 비율 배분
+- 실측 TTS 속도 4.9자/초 (예상 6.8자/초) → `chars_per_second` 보정
+- 한 글자 강조어("한")가 "한가운데서"에도 칠해짐 → 정확히 일치할 때만 강조
+- 출처 표기 중복 줄 제거
+
+### 2026-10-05 — Gemini 실제 연동 (`ae06ff2`)
+
+- Gemini API Key 등록 후 실제 제작: 주제 "디아틀로프 고개의 비극" 선정 → 위키백과 4건 조사 → 237자 대본 → 8개 Scene → 49.8초 영상, 품질 검사 통과
+- `gemini-2.5-flash` 503(과부하) 반복 → `fallback_models` 자동 전환 기능 추가
+- Gemini 가 한국어 글자 수를 잘 못 맞춤(389자 → 199자 → 341자로 3회 실패) → 문장 수(8~11문장, 문장당 20~30자)로 지시, 줄이거나 늘릴 분량을 구체적으로 피드백, 허용 범위를 목표의 0.85~1.2배로 완화
+- 실패한 작업을 `retry` 로 대본 단계부터 재개해 완성 (주제/자료 조사는 저장된 결과 재사용)
+
+### 2026-10-05 — YouTube 연동 (`2095145`)
+
+- 기본 Gemini 모델 `gemini-3.5-flash` 로 변경 (호출 확인), 대체 모델 3개 설정
+- YouTube OAuth 클라이언트 등록 → "액세스 차단됨" 오류는 테스트 사용자 추가로 해결 → 인증 완료, `token.json` 저장
+- `upload --privacy` 옵션 추가 → 디아틀로프 고개 영상 **비공개 업로드 성공** (https://youtube.com/shorts/cdllfZBnxa0), API 로 상태 확인
+- 자동 테스트 36개 통과
+
+### 남은 작업
+
+1. Pexels(및 Pixabay) API Key 등록 → 실제 스톡 영상 배경 확인
+2. YouTube API 감사 신청 → 통과 후 `publish_mode: "scheduled"` 로 12:00 예약 공개 확인
+3. OAuth 동의 화면을 "프로덕션"으로 게시 (테스트 상태는 토큰 7일 만료)
+4. `config.yaml` → `mode: "production"` 후 작업 스케줄러(Windows) 또는 launchd(macOS) 등록
