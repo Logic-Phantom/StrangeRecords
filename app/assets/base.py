@@ -17,6 +17,7 @@ class AssetRequest:
     min_duration: float        # 필요한 최소 길이(초) - 영상일 때
     visual_prompt: str = ""
     mood: str = "dark"
+    context: str = ""          # 영상 전체 주제/줄거리 (AI 이미지가 장면마다 같은 이야기를 그리도록)
     exclude_ids: set[str] = field(default_factory=set)
 
 

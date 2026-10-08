@@ -4,7 +4,7 @@
 - 카테고리: {{category_name}}
 - 주제: {{topic}}
 - 사실 여부: {{truth_status}}
-- 세로 9:16 화면, 무료 스톡 영상/사진(Pexels, Pixabay)을 검색해 사용한다.
+- 세로 9:16 화면, 장면마다 AI 로 생성한 이미지(visual_prompt)를 쓰고, 실패하면 무료 스톡 영상/사진(Pexels, Pixabay)을 검색해 사용한다.
 
 [나레이션 대본]
 {{script}}
@@ -17,6 +17,8 @@
 5. alt_search_queries 에는 결과가 없을 때 쓸 더 일반적인 영어 검색어 2개.
 6. visual_type: 움직임이 중요한 장면은 "video", 정적인 사물/지도/유물 등은 "image".
 7. visual 은 화면에 보일 장면 설명(한국어), visual_prompt 는 AI 이미지 생성을 위한 상세 영어 프롬프트(세로 구도, 사실적, 실존 인물 얼굴 묘사 금지).
+   visual_prompt 는 그 장면의 나레이션 내용을 그대로 그림으로 보여줘야 한다: 실제 장소/시대/사물/상황을 구체적으로(예: "a torn tent half-buried in snow on a mountain slope at night, 1959") 쓰고,
+   모든 장면에서 같은 시대·장소·등장 사물이 일관되게 이어지도록 한다. 글자/자막/로고는 넣지 않는다. 40~70단어.
 8. effect: zoom_in | zoom_out | pan_left | pan_right | pan_up | pan_down | static | auto 중 하나 (긴장감 있는 장면은 zoom_in).
 9. sfx: heartbeat | impact | whoosh | suspense | click | transition 중 하나 또는 null. 전체 영상에서 최대 {{max_sfx}}개만, 꼭 필요한 장면(반전, 긴장)에만 넣는다.
 10. emphasis_words: 자막에서 강조할 핵심 단어 0~2개 (narration 에 실제로 있는 단어 그대로).

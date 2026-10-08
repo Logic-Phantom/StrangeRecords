@@ -6,7 +6,8 @@
 app:
   name: "기묘한 기록"
   # development: 업로드 제외 전체 제작 / production: YouTube 업로드까지 실행
-  mode: "development"
+  # (development 이면 매일 자동 실행돼도 업로드하지 않는다)
+  mode: "production"
   timezone: "Asia/Seoul"
   language: "ko"
   # 성공한 작업의 중간 파일(output/work/<job_id>) 삭제 여부
@@ -116,16 +117,23 @@ voice:
 # 시각자료
 # ---------------------------------------------------------------------
 assets:
-  # 우선순위: pexels → pixabay → local(assets/images, assets/videos) → ai_image → procedural
-  providers: ["pexels", "pixabay", "local", "ai_image", "procedural"]
+  # 우선순위: ai_image(대본 기반 AI 장면 이미지) → pexels → pixabay → local(assets/images, assets/videos) → procedural
+  # AI 이미지가 실패(한도 초과/결제 미연결 등)하면 자동으로 다음 provider 로 넘어간다.
+  providers: ["ai_image", "pexels", "pixabay", "local", "procedural"]
   prefer_video: true
   per_page: 15
   min_short_side: 720
   max_download_mb: 80
   request_timeout: 30
   ai_image:
-    enabled: false              # Gemini 이미지 모델 (무료 티어 지원 여부 확인 후 활성화)
-    model: "gemini-2.5-flash-image"
+    # Scene 마다 대본의 visual_prompt 로 Gemini 가 장면 이미지를 생성한다.
+    # 무료 티어에서 이미지 모델이 막혀 있으면 Google AI Studio 에서 결제(Billing) 연결 필요.
+    enabled: true
+    model: "gemini-3.1-flash-image"
+    # 모델이 없거나(404) 한도 초과면 순서대로 전환 (python -m app.main models 로 이름 확인)
+    fallback_models: ["gemini-2.5-flash-image"]
+    # 모든 장면에 공통으로 붙는 화풍 (영상 전체 톤 통일)
+    style: "cinematic photorealistic still frame, film grain, 35mm"
 
 # ---------------------------------------------------------------------
 # 자막 (faster-whisper)
@@ -197,7 +205,9 @@ quality:
 # ---------------------------------------------------------------------
 youtube:
   privacy_status: "private"    # publish_mode=private 일 때의 공개 상태
-  publish_mode: "scheduled"    # private | scheduled | public
+  # public: 업로드 즉시 공개 / scheduled: publish_time 에 예약 공개 / private: 비공개
+  # ※ YouTube API 감사(Audit)를 통과하지 않은 프로젝트는 무엇으로 설정해도 YouTube 가 비공개로 잠근다.
+  publish_mode: "public"
   publish_time: "12:00"
   # 영상 완성 시점이 이미 예약 시간을 지났을 때: public_now | next_day | private
   late_policy: "public_now"

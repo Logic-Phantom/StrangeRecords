@@ -1,6 +1,7 @@
 """이미지 생성 Provider.
 
-- GeminiImageProvider: Gemini 이미지 모델 (config.assets.ai_image.enabled=true 일 때만, generated_by_ai=true 기록)
+- GeminiImageProvider: Scene 의 visual_prompt(대본 기반)로 Gemini 이미지 모델이 장면 이미지를 생성
+  (config.assets.ai_image.enabled=true 일 때만, generated_by_ai=true 기록)
 - ProceduralImageProvider: 외부 서비스 없이 Pillow 로 분위기 배경을 그리는 최종 fallback (저작권 문제 없음)
 """
 
@@ -26,33 +27,56 @@ MOOD_PALETTES = {
 }
 
 
+MOOD_STYLES = {
+    "dark": "dark, eerie, moody low-key lighting, desaturated cold tones, light fog",
+    "mystery": "mysterious, atmospheric volumetric light, deep blue and teal tones",
+    "light": "bright, playful, vivid colors, soft daylight",
+}
+
+
+def build_image_prompt(request: AssetRequest, style: str = "") -> str:
+    """Scene 의 visual_prompt + 영상 전체 이야기 + 공통 스타일 → 장면마다 같은 이야기를 그리는 프롬프트."""
+    parts = [request.visual_prompt or request.query]
+    if request.context:
+        parts.append(f"This is one scene of a short documentary-style story about: {request.context}")
+    parts.append(f"Style: {style or 'cinematic photorealistic still frame'}, {MOOD_STYLES.get(request.mood, MOOD_STYLES['dark'])}")
+    parts.append(
+        "Vertical 9:16 portrait composition with the main subject in the center, high detail."
+        " No text, no letters, no captions, no watermark, no logos, no recognizable real person faces."
+    )
+    return ". ".join(p.strip().rstrip(".") for p in parts if p and p.strip()) + "."
+
+
 class GeminiImageProvider(AssetProvider):
     name = "ai_image"
     supports = ("image",)
 
-    def __init__(self, client, model: str, enabled: bool):
+    def __init__(self, client, models: str | list[str], enabled: bool, style: str = ""):
         self.client = client
-        self.model = model
+        self.models = [m for m in ([models] if isinstance(models, str) else models) if m]
         self.enabled = enabled
+        self.style = style
+        self._tried: set[int] = set()
 
     @property
     def available(self) -> bool:
-        return bool(self.enabled and self.client and self.model)
+        return bool(self.enabled and self.client and self.models)
 
     def fetch(self, request: AssetRequest, dest_dir: Path) -> AssetInfo | None:
-        prompt = (
-            (request.visual_prompt or request.query)
-            + ". Vertical 9:16 composition, cinematic, atmospheric lighting, high detail, no text, no watermark,"
-            " no recognizable real person faces."
-        )
-        data = self.client.generate_image(prompt, self.model)
-        dest = dest_dir / f"scene_{request.scene_number:02d}_ai.png"
+        # 프롬프트는 검색어와 무관(visual_prompt)하므로 한 Scene 에 한 번만 시도한다 (실패 시 다음 provider 로)
+        if request.scene_number in self._tried:
+            return None
+        self._tried.add(request.scene_number)
+        prompt = build_image_prompt(request, self.style)
+        data, mime, model = self.client.generate_image(prompt, self.models, aspect_ratio="9:16")
+        ext = ".jpg" if "jpeg" in (mime or "") else ".png"
+        dest = dest_dir / f"scene_{request.scene_number:02d}_ai{ext}"
         dest.write_bytes(data)
         with Image.open(dest) as img:
             w, h = img.size
         return AssetInfo(
             scene_number=request.scene_number, media_type="image", local_path=str(dest), source="ai_image",
-            source_id=hashlib.md5(prompt.encode()).hexdigest()[:12], license="AI generated (Gemini)",
+            source_id=hashlib.md5(prompt.encode()).hexdigest()[:12], license=f"AI generated (Gemini {model})",
             downloaded_at=now_iso(), generated_by_ai=True, query=prompt, width=w, height=h,
         )
 

@@ -112,10 +112,12 @@ class VoiceConfig(BaseModel):
 class AIImageConfig(BaseModel):
     enabled: bool = False
     model: str = ""
+    fallback_models: list[str] = Field(default_factory=list)
+    style: str = ""
 
 
 class AssetsConfig(BaseModel):
-    providers: list[str] = Field(default_factory=lambda: ["pexels", "pixabay", "local", "ai_image", "procedural"])
+    providers: list[str] = Field(default_factory=lambda: ["ai_image", "pexels", "pixabay", "local", "procedural"])
     prefer_video: bool = True
     per_page: int = 15
     min_short_side: int = 720

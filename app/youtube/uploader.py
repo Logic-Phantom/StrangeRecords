@@ -117,4 +117,21 @@ class YouTubeUploader:
         video_id = response["id"]
         url = f"https://youtube.com/shorts/{video_id}"
         logger.info("Upload completed: %s", url)
-        return UploadResult(video_id, url, plan.privacy_status, plan.publish_at.isoformat() if plan.publish_at else None)
+        actual = self._check_privacy(service, video_id) or response.get("status", {}).get("privacyStatus") or plan.privacy_status
+        if plan.privacy_status == "public" and actual != "public":
+            logger.warning(
+                "공개(public)로 요청했지만 YouTube 상태는 '%s' 입니다. API 감사(Audit)를 통과하지 않은 프로젝트로 올린 영상은"
+                " YouTube 가 비공개로 잠급니다 → https://support.google.com/youtube/contact/yt_api_form 에서 감사 신청 필요",
+                actual,
+            )
+        return UploadResult(video_id, url, actual, plan.publish_at.isoformat() if plan.publish_at else None)
+
+    @staticmethod
+    def _check_privacy(service, video_id: str) -> str | None:
+        """업로드 직후 실제 공개 상태 확인 (youtube.readonly 범위)."""
+        try:
+            items = service.videos().list(part="status", id=video_id).execute().get("items", [])
+            return items[0]["status"].get("privacyStatus") if items else None
+        except Exception as exc:  # 확인 실패는 업로드 결과에 영향 주지 않음
+            logger.warning("업로드 후 공개 상태 확인 실패: %s", exc)
+            return None

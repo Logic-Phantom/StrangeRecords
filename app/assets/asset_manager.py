@@ -1,4 +1,4 @@
-"""Scene 별 시각자료 수집 (Pexels → Pixabay → 로컬 → AI 이미지 → 자체 생성)."""
+"""Scene 별 시각자료 수집 (config.assets.providers 순서, 기본: AI 이미지 → Pexels → Pixabay → 로컬 → 자체 생성)."""
 
 from __future__ import annotations
 
@@ -12,16 +12,18 @@ from app.assets.pixabay import PixabayAdapter
 from app.config.settings import Settings
 from app.schemas import AssetInfo, Scene, SceneTiming
 from app.utils.logger import get_logger
+from app.utils.retry import NonRetryableError
 
 logger = get_logger("assets")
 
 
 def build_providers(settings: Settings, gemini_client=None) -> list[AssetProvider]:
+    ai = settings.assets.ai_image
     registry: dict[str, AssetProvider] = {
         "pexels": PexelsAdapter(settings.secrets.pexels_api_key, settings.assets),
         "pixabay": PixabayAdapter(settings.secrets.pixabay_api_key, settings.assets),
         "local": LocalAssetProvider(settings.paths.local_images, settings.paths.local_videos),
-        "ai_image": GeminiImageProvider(gemini_client, settings.assets.ai_image.model, settings.assets.ai_image.enabled),
+        "ai_image": GeminiImageProvider(gemini_client, [ai.model, *ai.fallback_models], ai.enabled, ai.style),
         "procedural": ProceduralImageProvider(),
     }
     providers = [registry[name] for name in settings.assets.providers if name in registry]
@@ -51,6 +53,7 @@ class AssetManager:
         dest_dir: Path,
         mood: str = "dark",
         timings: list[SceneTiming] | None = None,
+        context: str = "",
     ) -> list[AssetInfo]:
         dest_dir.mkdir(parents=True, exist_ok=True)
         timing_map = {t.scene_number: t for t in timings or []}
@@ -61,7 +64,7 @@ class AssetManager:
         for scene in scenes:
             timing = timing_map.get(scene.scene_number)
             duration = (timing.end - timing.start) if timing else max(scene.end - scene.start, 4.0)
-            asset = self._collect_scene(scene, dest_dir, mood, duration, active)
+            asset = self._collect_scene(scene, dest_dir, mood, duration, active, context)
             assets.append(asset)
             self.used_ids.add(asset.source_id)
             logger.info(
@@ -71,7 +74,8 @@ class AssetManager:
         return assets
 
     def _collect_scene(
-        self, scene: Scene, dest_dir: Path, mood: str, duration: float, providers: list[AssetProvider]
+        self, scene: Scene, dest_dir: Path, mood: str, duration: float, providers: list[AssetProvider],
+        context: str = "",
     ) -> AssetInfo:
         preferred = scene.visual_type if not self.settings.assets.prefer_video or scene.visual_type == "image" else "video"
         media_order = [preferred, "image" if preferred == "video" else "video"]
@@ -86,14 +90,15 @@ class AssetManager:
                         continue
                     request = AssetRequest(
                         scene_number=scene.scene_number, query=query.strip(), media_type=media_type,
-                        min_duration=duration, visual_prompt=scene.visual_prompt, mood=mood,
-                        exclude_ids=self.used_ids,
+                        min_duration=duration, visual_prompt=scene.visual_prompt or scene.visual, mood=mood,
+                        exclude_ids=self.used_ids, context=context,
                     )
                     try:
                         asset = provider.fetch(request, dest_dir)
                     except Exception as exc:
                         logger.warning("%s 자료 수집 실패 (scene %d, '%s'): %s", provider.name, scene.scene_number, query, exc)
-                        self._record_failure(provider.name)
+                        # 인증/한도/권한 오류는 다음 Scene 에서도 같으므로 바로 제외
+                        self._record_failure(provider.name, limit=1 if isinstance(exc, NonRetryableError) else 2)
                         if provider.name in self.failed_providers:
                             break
                         continue

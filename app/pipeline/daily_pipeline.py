@@ -302,12 +302,13 @@ class DailyPipeline:
         used: set[str] = set()
         for source in ("pexels", "pixabay"):
             used |= self.assets_repo.used_source_ids(source)  # 다른 영상에서 쓴 자료 재사용 방지
-        manager = AssetManager(
-            self.settings,
-            build_providers(self.settings, self.gemini if self.settings.assets.ai_image.enabled else None),
-            used_ids=used,
+        # AI 이미지는 Gemini Key 가 있을 때만 (offline 테스트는 Gemini 를 호출하지 않음)
+        use_ai = self.settings.assets.ai_image.enabled and bool(self.settings.secrets.gemini_api_key) and not self.options.offline
+        manager = AssetManager(self.settings, build_providers(self.settings, self.gemini if use_ai else None), used_ids=used)
+        assets = manager.collect(
+            content.scenes, self.work_dir(ctx) / "assets", self._mood(ctx), self._timings(ctx),
+            context=f"{content.title} — {content.topic}",
         )
-        assets = manager.collect(content.scenes, self.work_dir(ctx) / "assets", self._mood(ctx), self._timings(ctx))
         ctx.state["assets"] = [a.model_dump() for a in assets]
         self.assets_repo.replace_for_job(ctx.id, assets)
         write_json(self.paths.sources / f"{ctx.id}_assets.json", ctx.state["assets"])

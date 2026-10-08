@@ -3,7 +3,7 @@
 매일 **새로운 주제 선정 → 자료 조사 → 대본 → 음성 → 시각자료 → 자막 → 편집 → 품질 검사 → YouTube 업로드 → 12:00 예약 공개 → 이력 저장** 을 자동으로 수행하는 Python 프로젝트입니다.
 
 - AI 엔진: **Google Gemini API 하나만 사용** (기본 `gemini-3.5-flash`, 과부하 시 자동 대체 모델 전환, 모델명은 `config.yaml` 한 곳에서 관리)
-- 음성: Edge TTS (무료) · 시각자료: Pexels / Pixabay (무료 API) · 자막: faster-whisper (로컬) · 편집: FFmpeg · DB: SQLite
+- 음성: Edge TTS (무료) · 시각자료: **대본 기반 Gemini AI 장면 이미지** → Pexels / Pixabay (무료 API) · 자막: faster-whisper (로컬) · 편집: FFmpeg · DB: SQLite
 - 출력: **1080x1920 · 9:16 · 30fps · H.264 · AAC · MP4**, 한국어 40~60초
 
 ---
@@ -15,11 +15,11 @@
 → [4] 최종 주제 → [5] 자료 조사(Wikipedia + Gemini 사실/추측 구분) → [6] Gemini 대본(Hook 포함)
 → [7] 대본 검증(길이/금지표현/사실여부 고지) → [8] Gemini Scene 분할 + 영어 검색어
 → [9] Edge TTS (Scene 별 합성 → 실제 길이 확정, 길면 속도 자동 조정)
-→ [10] Pexels → Pixabay → 로컬 → (AI 이미지) → 자체 그래픽 순으로 자료 수집
+→ [10] AI 장면 이미지(Scene 별 visual_prompt) → Pexels → Pixabay → 로컬 → 자체 그래픽 순으로 자료 수집
 → [11] faster-whisper 단어 타이밍 + 대본 텍스트 정렬 → Shorts 자막
 → [12] FFmpeg: 9:16 crop / Ken Burns / 전환 / 자막 / BGM 덕킹 / 효과음 / -14 LUFS
 → [13] 품질 검사(실패 시 업로드 금지) → [14] Gemini 제목·설명·해시태그 (+ 출처 자동 표기)
-→ [15] YouTube 업로드 → [16] 12:00 예약 공개 → [17] SQLite + JSON 이력 저장
+→ [15] YouTube 업로드 → [16] 공개(즉시 또는 12:00 예약) → [17] SQLite + JSON 이력 저장
 ```
 
 음성을 시각자료보다 먼저 만드는 이유: Scene 별 실제 음성 길이를 알아야 영상 클립 길이를 정확히 고를 수 있기 때문입니다.
@@ -58,7 +58,8 @@ bash scripts/setup_macos.sh
 | Edge TTS | - | 무료, Key 불필요 | - |
 | Wikipedia | - | 무료, Key 불필요 | - |
 
-- Pexels/Pixabay Key 가 없으면 `assets/images`, `assets/videos` 의 로컬 자료 → 자체 제작 그래픽(Pillow)으로 대체되어 **제작은 멈추지 않습니다**.
+- 시각자료는 **Gemini 이미지 모델이 Scene 마다 대본 내용대로 그린 이미지**를 먼저 사용합니다 (`assets.ai_image`). 같은 `GEMINI_API_KEY` 를 쓰지만, 무료 티어에서 이미지 모델이 막혀 있으면 [Google AI Studio](https://aistudio.google.com/) 에서 **결제(Billing) 연결**이 필요합니다 (장당 약 $0.04, 영상 1개 6~9장).
+- AI 이미지가 실패하면 Pexels/Pixabay → `assets/images`, `assets/videos` 의 로컬 자료 → 자체 제작 그래픽(Pillow, 어두운 배경)으로 대체되어 **제작은 멈추지 않습니다**. 영상이 어두운 배경만 나오면 로그에서 `ai_image 자료 수집 실패` 원인을 확인하세요.
 - Gemini 무료 모델/한도가 바뀌면 `python -m app.main models` 로 사용 가능한 모델을 확인하고 `config.yaml` 의 `gemini.model` (또는 `.env` 의 `GEMINI_MODEL`)만 바꾸면 됩니다.
 - 기본 모델이 과부하(503)/한도 초과(429)로 3회 실패하면 `gemini.fallback_models` 순서(`gemini-flash-latest` → `gemini-2.5-flash` → `gemini-flash-lite-latest`)로 자동 전환하고, 그 실행 동안은 전환된 모델을 유지합니다.
 - 하루 Gemini 호출 수: 주제 1 + 중복 판단 1 + 자료 정리 1 + 대본 1 + Scene 1 + 메타데이터 1 ≈ **6회** (+ 검증 실패 시 재요청).
@@ -89,10 +90,10 @@ python -m app.main schedule     # (보조) Python 스케줄러
 
 ```yaml
 app:
-  mode: "development"   # 주제~품질검사까지 수행, YouTube 업로드 X  →  `upload` 명령으로 나중에 업로드 가능
-  # mode: "production"  # 전체 파이프라인 + 업로드
+  mode: "production"    # 전체 파이프라인 + 업로드 (매일 자동 실행에 필요)
+  # mode: "development" # 주제~품질검사까지 수행, YouTube 업로드 X  →  `upload` 명령으로 나중에 업로드 가능
 youtube:
-  publish_mode: "scheduled"   # private | scheduled | public
+  publish_mode: "public"      # public(업로드 즉시 공개) | scheduled(publish_time 예약 공개) | private
   publish_time: "12:00"
   late_policy: "public_now"   # 완성 시점이 12:00 이후면: public_now | next_day | private
 ```
@@ -215,9 +216,10 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 | Edge TTS / Whisper / 자막 / FFmpeg / BGM / 효과음 / 1080x1920 출력 | ✅ 실제 제작 검증 |
 | 품질 검사 / SQLite 기록 / Retry / Error Log | ✅ 실제 실패 → `retry` 로 재개 검증 |
 | YouTube OAuth / Upload | ✅ 비공개 업로드 성공 |
-| YouTube 예약 공개 (12:00) | ⏳ 구현 완료, API 감사 통과 후 확인 필요 (미인증 프로젝트는 비공개로 잠김) |
+| YouTube 자동 공개 (`publish_mode: public`) | ⏳ 구현 완료, API 감사 통과 후 확인 필요 (미인증 프로젝트는 비공개로 잠김, 업로드 직후 상태 확인해 경고) |
+| AI 장면 이미지 (Gemini) | ⏳ 구현 + 테스트 완료, Gemini 결제 연결 후 확인 필요 (무료 티어는 이미지 모델 한도 0) |
 | Pexels / Pixabay | ⏳ 구현 완료, API Key 입력 후 확인 필요 (현재는 자체 그래픽으로 대체) |
-| Windows Scheduler / run_daily.bat | ⏳ 스크립트 작성 완료, Windows PC 에서 등록 필요 |
+| Windows Scheduler / run_daily.bat | ✅ Windows PC 에 등록 (매일 10:00), `token.json` 준비 후 업로드 동작 |
 | README / .env.example | ✅ |
 
 ## 13. 작업 내역
@@ -263,9 +265,27 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 - `upload --privacy` 옵션 추가 → 디아틀로프 고개 영상 **비공개 업로드 성공** (https://youtube.com/shorts/cdllfZBnxa0), API 로 상태 확인
 - 자동 테스트 36개 통과
 
+### 2026-10-08 — AI 장면 이미지 / 자동 공개 / 매일 자동 실행 수정
+
+**문제와 원인**
+- 영상 배경이 어두운 단색만 나옴 → Pexels/Pixabay Key 없음 + `ai_image.enabled: false` 라서 매번 마지막 fallback(자체 그래픽 그라디언트)이 사용됨
+- 업로드 영상이 비공개 → 테스트 업로드를 `--privacy private` 로 했고, 미인증(감사 전) API 프로젝트는 YouTube 가 비공개로 잠금
+- 하루 1개 자동 실행이 안 됨 → `app.mode: "development"` 라 실행돼도 업로드를 건너뜀, Windows PC 에 작업 스케줄러/`.venv`/`.env`/`token.json` 이 없었음
+
+**수정**
+- AI 장면 이미지: Scene 의 `visual_prompt`(대본 기반) + 영상 제목/주제 + 공통 화풍(`ai_image.style`) + 분위기로 Gemini 이미지 모델이 9:16 장면 이미지를 생성, provider 순서 1순위로 변경
+  - 이미지 모델 fallback(`ai_image.fallback_models`), 한도/권한 오류 시 즉시 다음 provider 로 전환(Scene 마다 재시도하지 않음)
+  - 무료 티어 한도 0(`limit: 0`)은 재시도 없이 "결제 연결 필요" 안내 후 Pexels → … → 자체 그래픽으로 계속 제작
+  - Scene 프롬프트에 나레이션 내용을 구체적으로 그리고 장면 간 시대/장소가 이어지도록 지시 추가
+- `publish_mode: "public"` (업로드 즉시 공개), 업로드 직후 실제 공개 상태를 조회해 비공개로 잠기면 감사 신청 안내 경고
+- `app.mode: "production"`, Windows 작업 스케줄러 등록(매일 10:00), 등록 스크립트가 `.venv`/`.env`/`token.json`/production 모드 누락을 경고
+- 무료 이미지 서비스(Pollinations)는 2026-10 현재 결제 필요(402)로 확인되어 사용하지 않음
+- 자동 테스트 40개 통과 (Python 3.14.8, Windows 11)
+
 ### 남은 작업
 
-1. Pexels(및 Pixabay) API Key 등록 → 실제 스톡 영상 배경 확인
-2. YouTube API 감사 신청 → 통과 후 `publish_mode: "scheduled"` 로 12:00 예약 공개 확인
-3. OAuth 동의 화면을 "프로덕션"으로 게시 (테스트 상태는 토큰 7일 만료)
-4. `config.yaml` → `mode: "production"` 후 작업 스케줄러(Windows) 또는 launchd(macOS) 등록
+1. Google AI Studio 에서 Gemini API 프로젝트에 결제 연결 → AI 장면 이미지 확인 (안 하면 Pexels/자체 그래픽으로 대체)
+2. Pexels(및 Pixabay) API Key 등록 → AI 이미지 실패 시 실제 스톡 영상으로 대체
+3. Windows PC: `.env` 에 `YOUTUBE_CLIENT_ID/SECRET` 입력 → `.venv\Scripts\python.exe -m app.main auth` 로 `token.json` 생성
+4. YouTube API 감사 신청 → 통과해야 공개/예약 공개가 실제로 적용됨
+5. OAuth 동의 화면을 "프로덕션"으로 게시 (테스트 상태는 토큰 7일 만료 → 자동 업로드가 1주 뒤 멈춤)

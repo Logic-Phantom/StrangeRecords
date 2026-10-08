@@ -183,22 +183,65 @@ class GeminiClient:
         return names
 
     # ----------------------------------------------------------------- image
-    def generate_image(self, prompt: str, model: str) -> bytes:
-        """Gemini 이미지 모델로 이미지를 생성한다 (config.assets.ai_image.enabled 일 때만 사용)."""
-        types = self._types
+    def generate_image(self, prompt: str, models: str | list[str], aspect_ratio: str = "9:16") -> tuple[bytes, str, str]:
+        """Gemini 이미지 모델로 이미지를 생성한다 (config.assets.ai_image.enabled 일 때만 사용).
 
-        def _call() -> bytes:
+        반환: (이미지 bytes, mime type, 사용한 모델). 모델이 없거나(404) 한도 초과/과부하면 다음 모델로 전환하고,
+        모든 모델이 키/권한/한도 문제로 실패하면 NonRetryableError (이번 작업에서 AI 이미지 제외).
+        """
+        types = self._types
+        models = [models] if isinstance(models, str) else [m for m in models if m]
+        config_kwargs: dict[str, Any] = {"response_modalities": ["IMAGE", "TEXT"]}
+        if aspect_ratio and hasattr(types, "ImageConfig"):
+            config_kwargs["image_config"] = types.ImageConfig(aspect_ratio=aspect_ratio)
+        gen_config = types.GenerateContentConfig(**config_kwargs)
+
+        def _call(model: str) -> tuple[bytes, str]:
             self.call_count += 1
-            response = self._client.models.generate_content(
-                model=model,
-                contents=prompt,
-                config=types.GenerateContentConfig(response_modalities=["IMAGE", "TEXT"]),
-            )
+            try:
+                response = self._client.models.generate_content(model=model, contents=prompt, config=gen_config)
+            except Exception as exc:
+                code = getattr(exc, "code", None)
+                if code in (400, 401, 403, 404):
+                    raise NonRetryableError(f"Gemini 이미지 요청 거부 ({code}): {exc}") from exc
+                if code == 429 and "free_tier" in str(exc) and "limit: 0" in str(exc):
+                    # 무료 티어에서는 이미지 모델 한도가 0 → 기다려도 풀리지 않음
+                    raise NonRetryableError(
+                        "Gemini 이미지 모델은 무료 티어 한도가 0 입니다. Google AI Studio(https://aistudio.google.com/)"
+                        " 에서 이 API Key 의 프로젝트에 결제(Billing)를 연결하면 AI 장면 이미지가 생성됩니다."
+                    ) from exc
+                raise
             for candidate in response.candidates or []:
-                for part in candidate.content.parts or []:
+                for part in (candidate.content.parts if candidate.content else None) or []:
                     inline = getattr(part, "inline_data", None)
                     if inline and inline.data:
-                        return inline.data
-            raise GeminiError("이미지 응답 없음")
+                        return inline.data, inline.mime_type or "image/png"
+            raise GeminiError("이미지 응답 없음 (안전 필터 등)")
 
-        return retry_call(_call, step="Gemini Image", max_attempts=2, delays=self.retry.delays)
+        last: Exception | None = None
+        for model in models:
+            try:
+                data, mime = retry_call(
+                    lambda: _call(model), step=f"Gemini Image ({model})", max_attempts=2, delays=self.retry.delays,
+                    retry_on=(Exception,),
+                )
+                return data, mime, model
+            except NonRetryableError as exc:
+                last = exc
+                cause = exc.__cause__
+                if getattr(cause, "code", None) == 404:
+                    logger.warning("이미지 모델 %s 없음 → 다음 모델", model)
+                    continue
+                raise
+            except RetryError as exc:
+                last = exc
+                code = getattr(exc.last_error, "code", None)
+                if code in FALLBACK_CODES:
+                    logger.warning("이미지 모델 %s 사용 불가(%s) → 다음 모델", model, code)
+                    continue
+                raise GeminiError(f"이미지 생성 실패: {exc.last_error}") from exc
+        # 모든 모델이 한도 초과/없음 → 이번 작업 동안 AI 이미지를 건너뛰도록 NonRetryable
+        raise NonRetryableError(
+            f"사용 가능한 Gemini 이미지 모델 없음 ({', '.join(models)}). 무료 티어에서 이미지 생성이 막혀 있으면"
+            f" Google AI Studio 에서 결제(Billing)를 연결해야 합니다: {last}"
+        )
