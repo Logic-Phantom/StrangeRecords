@@ -220,6 +220,7 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 | AI 장면 이미지 (Gemini) | ⏳ 구현 + 테스트 완료, Gemini 결제 연결 후 확인 필요 (무료 티어는 이미지 모델 한도 0) |
 | Pexels / Pixabay | ⏳ 구현 완료, API Key 입력 후 확인 필요 (현재는 자체 그래픽으로 대체) |
 | Windows Scheduler / run_daily.bat | ✅ Windows PC 에 등록 (매일 10:00), `token.json` 준비 후 업로드 동작 |
+| Windows 실제 제작 | ✅ Windows 11 / Python 3.14 에서 `today` 로 영상 제작·품질 검사 통과 (2026-10-08) |
 | README / .env.example | ✅ |
 
 ## 13. 작업 내역
@@ -265,7 +266,14 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 - `upload --privacy` 옵션 추가 → 디아틀로프 고개 영상 **비공개 업로드 성공** (https://youtube.com/shorts/cdllfZBnxa0), API 로 상태 확인
 - 자동 테스트 36개 통과
 
-### 2026-10-08 — AI 장면 이미지 / 자동 공개 / 매일 자동 실행 수정
+### 2026-10-08 — AI 장면 이미지 / 자동 공개 / 매일 자동 실행 수정 (`af884bb`)
+
+**Windows PC 환경 구성**
+- Windows 11 Home, Python 3.14.8 (3.11 미설치 → 3.14 로 `.venv` 생성, `requirements-dev.txt` 설치 정상)
+- FFmpeg: `imageio-ffmpeg` 내장 7.1 사용, 한글 폰트: `C:/Windows/Fonts/malgunbd.ttf` 자동 탐색
+- `setup` 실행 → `.env` 생성(빈 템플릿), DB 생성, 기본 BGM 3곡 확인
+- `GEMINI_API_KEY` 는 Windows 사용자 환경변수에 이미 설정되어 있어 `.env` 없이도 동작 (`load_dotenv(override=False)`)
+- `doctor` 결과: YouTube client / token 없음 → 업로드 전 `auth` 필요
 
 **문제와 원인**
 - 영상 배경이 어두운 단색만 나옴 → Pexels/Pixabay Key 없음 + `ai_image.enabled: false` 라서 매번 마지막 fallback(자체 그래픽 그라디언트)이 사용됨
@@ -282,6 +290,20 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 - 무료 이미지 서비스(Pollinations)는 2026-10 현재 결제 필요(402)로 확인되어 사용하지 않음
 - 자동 테스트 40개 통과 (Python 3.14.8, Windows 11)
 
+**실제 확인 결과**
+- `models` 로 확인한 이미지 모델: `gemini-3.1-flash-image`, `gemini-3.1-flash-lite-image`, `gemini-2.5-flash-image`, `gemini-3-pro-image(-preview)`, `gemini-3.1-flash-image-preview`
+  → 기본 `gemini-3.1-flash-image`, 대체 `gemini-2.5-flash-image` 로 설정
+- 현재 API Key 로 이미지 모델 3종 호출 → 모두 `429 RESOURCE_EXHAUSTED ... free_tier ... limit: 0` (무료 티어에서는 이미지 생성 불가, 결제 연결 필요)
+  → 이 경우 0.6초 만에 안내 후 대체 자료로 넘어가도록 처리
+- Windows 작업 스케줄러 `StrangeRecords Daily Shorts` 등록 완료 (다음 실행 2026-10-09 10:00)
+
+**영상 제작 (`today --no-upload`, job `20261008-173014`)**
+- 주제: 미제 사건 카테고리 → "하늘에서 2억과 함께 증발한 남자, DB 쿠퍼 미스터리 🪂" (FACT)
+- 단계별 시간: 주제 21초 → 조사 18초 → 대본 10초 → Scene 19초 → 음성 7초 → 자료 2초 → 자막 120초(Whisper 모델 첫 다운로드 포함) → 렌더 90초 → 품질 검사 통과 → 메타데이터 8초, 총 296초
+- 결과: `output/videos/20261008-173014.mp4` (14.7MB), 상태 `rendered` (YouTube 인증 전이라 업로드 대기)
+- 시각자료: AI 이미지가 무료 티어 한도 0 으로 첫 Scene 에서 제외 → Pexels Key 도 없어 자체 그래픽(어두운 그라디언트) 배경 사용
+- 이 PC 의 DB 는 새로 만들어져 기존 주제 0개 → macOS 에서 만든 영상(디아틀로프 고개 등)과의 중복 검사가 되지 않음
+
 ### 남은 작업
 
 1. Google AI Studio 에서 Gemini API 프로젝트에 결제 연결 → AI 장면 이미지 확인 (안 하면 Pexels/자체 그래픽으로 대체)
@@ -289,3 +311,5 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 3. Windows PC: `.env` 에 `YOUTUBE_CLIENT_ID/SECRET` 입력 → `.venv\Scripts\python.exe -m app.main auth` 로 `token.json` 생성
 4. YouTube API 감사 신청 → 통과해야 공개/예약 공개가 실제로 적용됨
 5. OAuth 동의 화면을 "프로덕션"으로 게시 (테스트 상태는 토큰 7일 만료 → 자동 업로드가 1주 뒤 멈춤)
+6. 인증 후 `.venv\Scripts\python.exe -m app.main upload` 로 대기 중인 DB 쿠퍼 영상 업로드 (오늘 안 올리면 내일 10:00 실행은 새 영상을 만든다)
+7. macOS 의 `data/database.sqlite` 를 이 PC 로 복사 → 기존 주제 중복 방지 유지
