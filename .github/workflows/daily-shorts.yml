@@ -33,7 +33,8 @@ permissions:
 
 jobs:
   shorts:
-    runs-on: ubuntu-latest
+    # ubuntu-latest 는 2026-10-19 부터 Ubuntu 26 으로 바뀌므로 검증된 24.04 로 고정
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
       PYTHONUTF8: "1"
@@ -43,15 +44,15 @@ jobs:
       PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
       COMMAND: ${{ inputs.command || 'today' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Checkout pipeline state
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: pipeline-state
           path: .state
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
@@ -63,7 +64,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Cache Whisper model
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: models
           key: whisper-models-v1
@@ -111,7 +112,7 @@ jobs:
 
       - name: Keep video for 3 days
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: shorts-${{ github.run_id }}
           path: output/videos/*.mp4

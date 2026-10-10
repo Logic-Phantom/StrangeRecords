@@ -1,6 +1,6 @@
 # 기묘한 기록 (StrangeRecords) — AI YouTube Shorts 자동 제작·업로드 시스템
 
-매일 **새로운 주제 선정 → 자료 조사 → 대본 → 음성 → 시각자료 → 자막 → 편집 → 품질 검사 → YouTube 업로드(즉시 공개) → 이력 저장** 을 자동으로 수행하는 Python 프로젝트입니다. (Windows 작업 스케줄러로 매일 22:00 실행)
+매일 **새로운 주제 선정 → 자료 조사 → 대본 → 음성 → 시각자료 → 자막 → 편집 → 품질 검사 → YouTube 업로드(즉시 공개) → 이력 저장** 을 자동으로 수행하는 Python 프로젝트입니다. (GitHub Actions 로 매일 22:07 KST 실행 — PC 를 켜 두지 않아도 됨)
 
 - AI 엔진: **Google Gemini API 하나만 사용** (기본 `gemini-3.5-flash`, 과부하 시 자동 대체 모델 전환, 모델명은 `config.yaml` 한 곳에서 관리)
 - 음성: Edge TTS (무료) · 시각자료: **대본 기반 Gemini AI 장면 이미지** → **Hugging Face SDXL (대체 AI 이미지)** → Pexels / Pixabay (무료 API) · 자막: faster-whisper (로컬) · 편집: FFmpeg · DB: SQLite
@@ -119,9 +119,10 @@ youtube:
 | `redirect_uri_mismatch` | OAuth 클라이언트가 "웹 애플리케이션" 유형 → **데스크톱 앱** 유형으로 다시 생성 |
 | `YouTube Data API v3 has not been used` | [API 라이브러리](https://console.cloud.google.com/apis/library/youtube.googleapis.com)에서 사용 설정 |
 
-> ⚠️ **API 감사(Audit) 전 제한**: 2020-07-28 이후 생성된 **미인증 API 프로젝트**로 업로드한 영상은 YouTube 정책상 **비공개(private)로 잠깁니다**. 예약/공개 업로드를 하려면 [YouTube API 감사 신청](https://support.google.com/youtube/contact/yt_api_form)을 통과해야 합니다.
+> ⚠️ **API 감사(Audit) 전 제한**: YouTube 정책상 미인증 API 프로젝트로 업로드한 영상은 비공개로 잠길 수 있습니다. 현재 프로젝트는 2026-10-10 클라우드 업로드가 **실제 public 으로 확인**되었지만, 업로드 직후 상태를 조회해 private 로 잠기면 로그에 [감사 신청](https://support.google.com/youtube/contact/yt_api_form) 안내 경고를 남깁니다.
 >
-> ⚠️ OAuth 동의 화면이 "테스트" 상태면 refresh token 이 7일 후 만료될 수 있습니다. 장기 운영 시 앱을 "프로덕션"으로 게시하세요.
+> ⚠️ OAuth 동의 화면이 "테스트" 상태면 refresh token 이 7일 후 만료됩니다 → 2026-10-10 **프로덕션으로 게시 완료**, 게시 후 다시 받은 토큰 사용 중.
+> 프로덕션 게시에 필요한 홈페이지/개인정보처리방침/약관은 GitHub Pages(`docs/`)로 제공: [홈](https://logic-phantom.github.io/StrangeRecords/) · [개인정보처리방침](https://logic-phantom.github.io/StrangeRecords/privacy.html) · [약관](https://logic-phantom.github.io/StrangeRecords/terms.html) (승인된 도메인 `logic-phantom.github.io`, 앱 로고는 올리지 않음 → 올리면 브랜드 인증 심사 필요)
 >
 > 업로드 시 `containsSyntheticMedia`(AI 생성 콘텐츠 고지)를 설정하고, 설명란에 AI 활용 사실을 자동으로 표기합니다.
 
@@ -129,7 +130,7 @@ youtube:
 
 ### GitHub Actions (기본, PC 꺼져 있어도 동작)
 
-`.github/workflows/daily-shorts.yml` 이 매일 **22:07 KST** (GitHub 혼잡 시 수십 분 지연 가능) GitHub 서버(Ubuntu)에서 `today` 를 실행해 제작 → 업로드합니다.
+`.github/workflows/daily-shorts.yml` 이 매일 **22:07 KST** (GitHub 혼잡 시 수십 분 지연 가능) GitHub 서버(Ubuntu 24.04)에서 `today` 를 실행해 제작 → 업로드합니다. 1회 실행 약 5분 (공개 저장소라 Actions 무료).
 
 1. 저장소 **Settings → Secrets and variables → Actions → New repository secret** 에 등록
    | Secret | 값 |
@@ -141,7 +142,8 @@ youtube:
 2. **Actions → Daily Shorts → Run workflow** 로 수동 실행해 확인 (`test` = 제작만, `today` = 제작 + 업로드)
 - 주제 이력/하루 1개 정책 DB(`data/database.sqlite`)는 실행마다 `pipeline-state` 브랜치에 저장되어 다음 실행이 이어 씁니다.
 - 실패하면 같은 서버에서 5분/10분 뒤 실패한 단계부터 최대 3회 실행합니다. 완성 영상은 Actions 실행 화면의 Artifacts 에 3일 보관됩니다.
-- ⚠️ OAuth 동의 화면이 "테스트" 상태면 refresh token 이 7일 뒤 만료되어 업로드가 멈춥니다 → [Google 인증 플랫폼 → 대상](https://console.cloud.google.com/auth/audience) 에서 **앱 게시(프로덕션)** 후 `auth` 를 다시 실행하고 `YOUTUBE_TOKEN_JSON` 을 갱신하세요.
+- YouTube 토큰을 다시 받아야 할 때(권한 철회, 비밀번호 변경 등): 로컬에서 `token.json` 삭제 → `auth` → 새 `token.json` 내용으로 `YOUTUBE_TOKEN_JSON` 갱신
+- 같은 날 이미 업로드했으면(수동 실행 포함) 22:07 실행은 바로 종료됩니다.
 - 공개 저장소는 60일 동안 활동이 없으면 예약 워크플로가 비활성화될 수 있습니다 (Actions 화면에서 다시 Enable).
 - 클라우드와 Windows 작업 스케줄러를 동시에 쓰면 DB 가 달라 하루 2개가 올라가므로 하나만 사용합니다.
 
@@ -237,12 +239,13 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 | 주제 DB / 주제 중복 방지 | ✅ 구현 + 테스트 (실제 후보 8개 중복 검사 통과) |
 | Edge TTS / Whisper / 자막 / FFmpeg / BGM / 효과음 / 1080x1920 출력 | ✅ 실제 제작 검증 |
 | 품질 검사 / SQLite 기록 / Retry / Error Log | ✅ 실제 실패 → `retry` 로 재개 검증 |
-| YouTube OAuth / Upload | ✅ 비공개 업로드 성공 |
-| YouTube 자동 공개 (`publish_mode: public`) | ⏳ 구현 완료, API 감사 통과 후 확인 필요 (미인증 프로젝트는 비공개로 잠김, 업로드 직후 상태 확인해 경고) |
+| YouTube OAuth / Upload | ✅ OAuth 앱 프로덕션 게시, Windows PC 에서 재인증 (채널: 팬텀로즥) |
+| YouTube 자동 공개 (`publish_mode: public`) | ✅ 클라우드 업로드 영상이 YouTube API 조회 결과 `privacyStatus: public` (2026-10-10) |
+| GitHub Actions 클라우드 자동 실행 | ✅ 수동 실행으로 제작 → 업로드 → DB 저장 성공 (약 5분), 매일 22:07 KST 예약 |
 | AI 장면 이미지 (Gemini) | ⏳ 구현 + 테스트 완료, Gemini 결제 연결 후 확인 필요 (무료 티어는 이미지 모델 한도 0) |
 | AI 장면 이미지 대체 (Hugging Face SDXL) | ⏳ 구현 + 테스트 완료, `HF_API_KEY` 등록됨 → 토큰에 Inference Providers 권한 추가 후 확인 필요 (현재 403) |
 | Pexels / Pixabay | ⏳ 구현 완료, API Key 입력 후 확인 필요 (현재는 자체 그래픽으로 대체) |
-| Windows Scheduler / run_daily.bat | ✅ Windows PC 에 등록 (매일 22:00 + 23:00 재시도), `token.json` 준비 후 업로드 동작 |
+| Windows Scheduler / run_daily.bat | ✅ 등록 (매일 22:00 + 23:00 재시도), 현재는 클라우드 사용 중이라 **비활성화** (중복 업로드 방지) |
 | Windows 실제 제작 | ✅ Windows 11 / Python 3.14 에서 `today` 로 영상 제작·품질 검사 통과 (2026-10-08) |
 | README / .env.example | ✅ |
 
@@ -344,14 +347,26 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 **YouTube 인증 + 클라우드 자동 실행**
 - Windows PC `.env` 에 OAuth 클라이언트 등록 → `auth` 성공 (채널: 팬텀로즥), `token.json` 저장
 - PC 를 켜지 않아도 되도록 GitHub Actions 워크플로 추가 (매일 22:07 KST), DB 는 `pipeline-state` 브랜치로 이어 씀 → 중복 업로드 방지를 위해 Windows 작업 스케줄러 작업은 비활성화
+- GitHub Secrets 등록: `GEMINI_API_KEY`, `YOUTUBE_TOKEN_JSON`, `HF_API_KEY`
+
+**OAuth 앱 프로덕션 게시**
+- 프로덕션 전환에 홈페이지/개인정보처리방침 URL 이 필수 → `docs/index.html`, `privacy.html`, `terms.html` 작성, GitHub Pages(main `/docs`) 로 공개
+- 브랜딩: 앱 이름 `기묘한 기록`, 지원/개발자 이메일, 위 URL 3개, 승인된 도메인 `logic-phantom.github.io`, 로고 없음 → 앱 게시 완료
+- 테스트 상태에서 받은 토큰(7일 만료)을 버리고 `auth` 로 재인증 → `YOUTUBE_TOKEN_JSON` 갱신
+
+**클라우드 첫 실행 결과 (Actions run `38015678898`, workflow_dispatch)**
+- 4분 43초 만에 성공. 오전에 네트워크 오류로 실패했던 job `20261010-094711` 을 주제 단계부터 이어서 완성
+- 주제: "주민 2%에게만 들리는 마을의 정체불명 저주파 괴소음 🔊" → https://youtube.com/shorts/NV0XwJyq8Wo
+- YouTube API 로 확인: `privacyStatus: public`, `uploadStatus: processed` → **업로드 즉시 공개 동작 확인**
+- 시각자료 7개 모두 자체 그래픽(procedural): Gemini 이미지 한도 0 + HF 토큰 권한 없음 + Pexels Key 없음
+- 실행 경고 정리: Node.js 20 지원 종료 → `checkout@v5`, `setup-python@v6`, `cache@v5`, `upload-artifact@v6` (Node 24), `ubuntu-latest` 가 10/19 부터 Ubuntu 26 으로 바뀌므로 `ubuntu-24.04` 고정
 
 ### 남은 작업
 
-1. https://huggingface.co/settings/tokens 에서 등록한 토큰을 Edit → **"Make calls to Inference Providers"** 체크 → Hugging Face 대체 이미지 동작 (`.env` 수정 불필요)
-2. Google AI Studio 에서 Gemini API 프로젝트에 결제 연결 → AI 장면 이미지 확인 (안 하면 HF/Pexels/자체 그래픽으로 대체)
-3. Pexels(및 Pixabay) API Key 등록 → AI 이미지 실패 시 실제 스톡 영상으로 대체
-4. **GitHub 저장소 Secrets 에 `GEMINI_API_KEY`, `YOUTUBE_TOKEN_JSON`, `HF_API_KEY` 등록 → Actions 에서 수동 실행으로 확인 (등록 전에는 클라우드 자동 실행이 실패)**
-5. YouTube API 감사 신청 → 통과해야 공개/예약 공개가 실제로 적용됨
-6. OAuth 동의 화면을 "프로덕션"으로 게시 (테스트 상태는 토큰 7일 만료 → 자동 업로드가 1주 뒤 멈춤)
-7. 인증 후 `.venv\Scripts\python.exe -m app.main upload` 로 대기 중인 DB 쿠퍼 영상 업로드
-8. macOS 의 `data/database.sqlite` 를 이 PC 로 복사 → 기존 주제 중복 방지 유지
+1. **영상 화면 품질 (가장 중요)**: 지금은 모든 장면이 어두운 그라디언트 배경. 아래 중 하나 이상 필요
+   - https://huggingface.co/settings/tokens 에서 등록한 토큰 Edit → **"Make calls to Inference Providers"** 체크 (Secret 수정 불필요, 무료 월 크레딧 한도 내)
+   - Pexels API Key 발급(무료) → GitHub Secret `PEXELS_API_KEY` + 로컬 `.env` 에 등록
+   - Google AI Studio 에서 Gemini API 프로젝트에 결제 연결 (장당 약 $0.04)
+2. 앱 로고를 넣고 싶으면 브랜드 인증 심사 필요 (안 해도 동작에 문제 없음)
+3. macOS 의 `data/database.sqlite` 에 있는 주제(디아틀로프 고개 등)는 클라우드 DB 에 없음 → 필요하면 `pipeline-state` 브랜치 DB 에 병합
+4. 로컬에 남은 DB 쿠퍼 영상(job `20261008-173014`, rendered)은 업로드 안 됨. 올리려면 로컬에서 `upload` (클라우드 DB 에는 기록되지 않음, 그날 영상이 2개가 됨)
