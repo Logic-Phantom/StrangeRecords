@@ -3,7 +3,7 @@
 매일 **새로운 주제 선정 → 자료 조사 → 대본 → 음성 → 시각자료 → 자막 → 편집 → 품질 검사 → YouTube 업로드(즉시 공개) → 이력 저장** 을 자동으로 수행하는 Python 프로젝트입니다. (GitHub Actions 로 매일 22:07 KST 실행 — PC 를 켜 두지 않아도 됨)
 
 - AI 엔진: **Google Gemini API 하나만 사용** (기본 `gemini-3.5-flash`, 과부하 시 자동 대체 모델 전환, 모델명은 `config.yaml` 한 곳에서 관리)
-- 음성: Edge TTS (무료) · 시각자료: **대본 기반 Gemini AI 장면 이미지** → **Hugging Face SDXL (대체 AI 이미지)** → Pexels / Pixabay (무료 API) · 자막: faster-whisper (로컬) · 편집: FFmpeg · DB: SQLite
+- 음성: Edge TTS (무료) · 시각자료: **대본 기반 Gemini AI 장면 이미지** → **Cloudflare Workers AI / Hugging Face SDXL (대체 AI 이미지)** → Pexels / Pixabay (무료 API) · 자막: faster-whisper (로컬) · 편집: FFmpeg · DB: SQLite
 - 출력: **1080x1920 · 9:16 · 30fps · H.264 · AAC · MP4**, 한국어 40~60초
 
 ---
@@ -54,13 +54,15 @@ bash scripts/setup_macos.sh
 | `GEMINI_API_KEY` | ✅ | 무료 티어 (한도/모델은 수시 변경) | https://aistudio.google.com/apikey |
 | `PEXELS_API_KEY` | 권장 | 무료 | https://www.pexels.com/api/ |
 | `PIXABAY_API_KEY` | 권장 | 무료 | https://pixabay.com/api/docs/ |
-| `HF_API_KEY` | 권장 | 무료 월 크레딧 | https://huggingface.co/settings/tokens → Fine-grained 토큰, **"Make calls to Inference Providers"** 권한 체크 |
+| `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` | 권장 | 무료 (하루 10,000 Neurons, SDXL 0원) | https://dash.cloudflare.com → Workers AI → REST API 사용 → Account ID 복사 + "Workers AI" API 토큰 생성 |
+| `HF_API_KEY` | 선택 | 크레딧 필요 | https://huggingface.co/settings/tokens → Fine-grained 토큰, **"Make calls to Inference Providers"** 권한 체크 |
 | `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` | 업로드 시 | 무료 (일일 할당량 10,000 units) | Google Cloud Console → YouTube Data API v3 사용 설정 → OAuth 클라이언트 ID(**데스크톱 앱**) |
 | Edge TTS | - | 무료, Key 불필요 | - |
 | Wikipedia | - | 무료, Key 불필요 | - |
 
 - 시각자료는 **Gemini 이미지 모델이 Scene 마다 대본 내용대로 그린 이미지**를 먼저 사용합니다 (`assets.ai_image`). 같은 `GEMINI_API_KEY` 를 쓰지만, 무료 티어에서 이미지 모델이 막혀 있으면 [Google AI Studio](https://aistudio.google.com/) 에서 **결제(Billing) 연결**이 필요합니다 (장당 약 $0.04, 영상 1개 6~9장).
-- Gemini 이미지가 실패(무료 티어 `limit: 0`, 429 RESOURCE_EXHAUSTED, 권한 오류)하면 **같은 Scene 에서 바로 Hugging Face Inference API** (`assets.hf_image`, 기본 `stabilityai/stable-diffusion-xl-base-1.0`, 768x1344)로 같은 프롬프트를 그립니다. `provider: "auto"` 라 그 모델을 서비스 중인 Inference Provider(현재 SDXL 은 fal-ai)로 자동 라우팅되며, 토큰 권한 없음(403)·크레딧 소진(402)이면 이번 작업에서 제외하고 Pexels 로 넘어갑니다.
+- Gemini 이미지가 실패(무료 티어 `limit: 0`, 429 RESOURCE_EXHAUSTED, 권한 오류)하면 **같은 Scene 에서 바로 Cloudflare Workers AI** (`assets.cf_image`, `@cf/stabilityai/stable-diffusion-xl-base-1.0`, 768x1344, 무료)로 같은 프롬프트를 그립니다. 인증 오류·무료 한도 초과(429)면 이번 작업에서 제외하고 다음 provider 로 넘어갑니다.
+- Cloudflare 도 실패하면 **Hugging Face Inference API** (`assets.hf_image`, 기본 `stabilityai/stable-diffusion-xl-base-1.0`, 768x1344)로 같은 프롬프트를 그립니다. `provider: "auto"` 라 그 모델을 서비스 중인 Inference Provider(현재 SDXL 은 fal-ai)로 자동 라우팅되며, 토큰 권한 없음(403)·크레딧 소진(402)이면 이번 작업에서 제외하고 Pexels 로 넘어갑니다.
 - AI 이미지가 모두 실패하면 Pexels/Pixabay → `assets/images`, `assets/videos` 의 로컬 자료 → 자체 제작 그래픽(Pillow, 어두운 배경)으로 대체되어 **제작은 멈추지 않습니다**. 영상이 어두운 배경만 나오면 로그에서 `ai_image 자료 수집 실패` 원인을 확인하세요.
 - Gemini 무료 모델/한도가 바뀌면 `python -m app.main models` 로 사용 가능한 모델을 확인하고 `config.yaml` 의 `gemini.model` (또는 `.env` 의 `GEMINI_MODEL`)만 바꾸면 됩니다.
 - 기본 모델이 과부하(503)/한도 초과(429)로 3회 실패하면 `gemini.fallback_models` 순서(`gemini-flash-latest` → `gemini-2.5-flash` → `gemini-flash-lite-latest`)로 자동 전환하고, 그 실행 동안은 전환된 모델을 유지합니다.
@@ -137,7 +139,8 @@ youtube:
    |---|---|
    | `GEMINI_API_KEY` | Gemini API Key (필수) |
    | `YOUTUBE_TOKEN_JSON` | 로컬 `token.json` 파일 내용 전체 (필수, `Get-Content token.json -Raw \| Set-Clipboard` 로 복사) |
-   | `HF_API_KEY` | Hugging Face 토큰 (권장) |
+   | `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` | Cloudflare Workers AI (권장, 무료 AI 이미지) |
+   | `HF_API_KEY` | Hugging Face 토큰 (선택, 크레딧 필요) |
    | `PEXELS_API_KEY` / `PIXABAY_API_KEY` | 선택 |
 2. **Actions → Daily Shorts → Run workflow** 로 수동 실행해 확인 (`test` = 제작만, `today` = 제작 + 업로드)
 - 주제 이력/하루 1개 정책 DB(`data/database.sqlite`)는 실행마다 `pipeline-state` 브랜치에 저장되어 다음 실행이 이어 씁니다.
@@ -243,6 +246,7 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 | YouTube 자동 공개 (`publish_mode: public`) | ✅ 클라우드 업로드 영상이 YouTube API 조회 결과 `privacyStatus: public` (2026-10-10) |
 | GitHub Actions 클라우드 자동 실행 | ✅ 수동 실행으로 제작 → 업로드 → DB 저장 성공 (약 5분), 매일 22:07 KST 예약 |
 | AI 장면 이미지 (Gemini) | ⏳ 구현 + 테스트 완료, Gemini 결제 연결 후 확인 필요 (무료 티어는 이미지 모델 한도 0) |
+| AI 장면 이미지 대체 (Cloudflare Workers AI SDXL, 무료) | ⏳ 구현 + 테스트 완료, `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` 등록 후 확인 필요 |
 | AI 장면 이미지 대체 (Hugging Face SDXL) | ⏳ 구현 + 테스트 완료, 토큰 권한 OK → 계정 크레딧 0 이라 `402 Payment Required` (fal-ai, hf-inference 모두). 크레딧 충전 시 동작, 그 전에는 자동으로 다음 provider 사용 |
 | Pexels / Pixabay | ⏳ 구현 완료, API Key 입력 후 확인 필요 (현재는 자체 그래픽으로 대체) |
 | Windows Scheduler / run_daily.bat | ✅ 등록 (매일 22:00 + 23:00 재시도), 현재는 클라우드 사용 중이라 **비활성화** (중복 업로드 방지) |
@@ -361,11 +365,19 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 - 시각자료 7개 모두 자체 그래픽(procedural): Gemini 이미지 한도 0 + HF 토큰 권한 없음 + Pexels Key 없음
 - 실행 경고 정리: Node.js 20 지원 종료 → `checkout@v5`, `setup-python@v6`, `cache@v5`, `upload-artifact@v6` (Node 24), `ubuntu-latest` 가 10/19 부터 Ubuntu 26 으로 바뀌므로 `ubuntu-24.04` 고정
 
+**무료 AI 이미지: Cloudflare Workers AI (`CloudflareImageProvider`)**
+- HF 토큰 권한 추가 후 재확인 → 403 은 해결됐지만 계정 크레딧 0 으로 `402 Payment Required` (fal-ai SDXL, hf-inference SD3 모두), Pexels 는 신규 API Key 발급 중단 상태
+- 무료 대안으로 Cloudflare Workers AI 추가: 무료 플랜 하루 10,000 Neurons, `@cf/stabilityai/stable-diffusion-xl-base-1.0` 은 단가 0원, 768x1344 지정 가능
+- provider 순서 `ai_image → cf_image → hf_image → pexels → pixabay → local → procedural`, 응답이 PNG 바이너리/ base64 JSON 둘 다 처리
+- 401/403/429/400/404 는 이번 작업에서 제외, 5xx 는 1회 재시도. 자동 테스트 47개 통과
+
 ### 남은 작업
 
 1. **영상 화면 품질 (가장 중요)**: 지금은 모든 장면이 어두운 그라디언트 배경. 아래 중 하나 이상 필요
+   - **Cloudflare Workers AI (무료, 권장)**: Account ID + "Workers AI" API 토큰 → GitHub Secrets `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` + 로컬 `.env`
+   - Pixabay API Key (무료, 이미 구현됨) → GitHub Secret `PIXABAY_API_KEY`
    - Hugging Face: 토큰 권한은 추가 완료(2026-10-10), 하지만 계정 크레딧이 0 이라 402 → https://huggingface.co/settings/billing 에서 크레딧 충전 시 동작 (영상 1개당 이미지 7장 내외)
-   - Pexels API Key 발급(무료) → GitHub Secret `PEXELS_API_KEY` + 로컬 `.env` 에 등록
+   - Pexels API Key → 2026-10-10 현재 신규 발급 중단
    - Google AI Studio 에서 Gemini API 프로젝트에 결제 연결 (장당 약 $0.04)
 2. 앱 로고를 넣고 싶으면 브랜드 인증 심사 필요 (안 해도 동작에 문제 없음)
 3. macOS 의 `data/database.sqlite` 에 있는 주제(디아틀로프 고개 등)는 클라우드 DB 에 없음 → 필요하면 `pipeline-state` 브랜치 DB 에 병합

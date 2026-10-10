@@ -18,7 +18,8 @@ def settings(tmp_path):
     s.paths = Paths(root=tmp_path)
     s.paths.ensure()
     s.retry.delays = [(0, 0), (0, 0)]
-    s.secrets.hf_api_key = ""  # 테스트에서 실제 Hugging Face 크레딧을 쓰지 않도록
+    s.secrets.hf_api_key = ""  # 테스트에서 실제 Hugging Face / Cloudflare 를 호출하지 않도록
+    s.secrets.cloudflare_account_id = s.secrets.cloudflare_api_token = ""
     return s
 
 

@@ -213,6 +213,9 @@ def cmd_doctor(settings: Settings, args: argparse.Namespace) -> int:
     line("GEMINI_API_KEY", bool(s.gemini_api_key), "설정됨" if s.gemini_api_key else "없음 (필수)")
     ai = settings.assets.ai_image
     line("AI 장면 이미지", ai.enabled, f"{ai.model} (무료 티어는 한도 0 → 결제 연결 필요)" if ai.enabled else "꺼짐 (assets.ai_image.enabled)", required=False)
+    cf = settings.assets.cf_image
+    cf_ok = bool(s.cloudflare_account_id and s.cloudflare_api_token and cf.enabled)
+    line("Cloudflare AI 이미지", cf_ok, f"{cf.model} (무료, Gemini 이미지 실패 시 대체)" if cf_ok else "없음/꺼짐 (CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN)", required=False)
     hf = settings.assets.hf_image
     line("HF_API_KEY", bool(s.hf_api_key and hf.enabled), f"{hf.model} (Gemini 이미지 실패 시 대체)" if s.hf_api_key and hf.enabled else "없음/꺼짐 → Gemini 실패 시 Pexels 로", required=False)
     line("PEXELS_API_KEY", bool(s.pexels_api_key), "설정됨" if s.pexels_api_key else "없음 → Pixabay/로컬/자체 그래픽 사용", required=False)

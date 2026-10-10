@@ -2,22 +2,26 @@
 
 - GeminiImageProvider: Scene 의 visual_prompt(대본 기반)로 Gemini 이미지 모델이 장면 이미지를 생성
   (config.assets.ai_image.enabled=true 일 때만, generated_by_ai=true 기록)
-- HuggingFaceImageProvider: Gemini 이미지가 실패(무료 티어 한도 0, 429 등)하면 같은 Scene 에서 바로 이어 받는
-  대체 AI 이미지 (Hugging Face Inference Providers, SDXL, HF_API_KEY). 이것도 실패하면 예외를 올려 Pexels 로 넘어간다.
+- CloudflareImageProvider: Gemini 이미지가 실패하면 같은 Scene 에서 바로 이어 받는 무료 대체 AI 이미지
+  (Cloudflare Workers AI, SDXL, 무료 플랜 하루 10,000 Neurons / SDXL 은 0원)
+- HuggingFaceImageProvider: 대체 AI 이미지 2순위 (Hugging Face Inference Providers, SDXL, HF_API_KEY, 크레딧 필요).
+  대체 AI 이미지가 모두 실패하면 예외를 올려 Pexels 로 넘어간다.
 - ProceduralImageProvider: 외부 서비스 없이 Pillow 로 분위기 배경을 그리는 최종 fallback (저작권 문제 없음)
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import random
 from pathlib import Path
 
+import requests
 from PIL import Image, ImageDraw, ImageFilter
 
 from app.assets.base import AssetProvider, AssetRequest
-from app.config.settings import HFImageConfig
+from app.config.settings import CFImageConfig, HFImageConfig
 from app.schemas import AssetInfo
 from app.utils.files import now_iso
 from app.utils.logger import get_logger
@@ -89,6 +93,85 @@ class GeminiImageProvider(AssetProvider):
 def _http_status(exc: BaseException) -> int | None:
     response = getattr(exc, "response", None)
     return getattr(response, "status_code", None)
+
+
+class CloudflareImageProvider(AssetProvider):
+    """Cloudflare Workers AI(무료 플랜)로 장면 이미지를 생성하는 Gemini 이미지 대체 수단.
+
+    POST https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}
+    인증(401/403)·무료 한도 초과(429)·모델 없음은 NonRetryableError (이번 작업에서 제외),
+    일시 오류는 1회 재시도 후 예외 → AssetManager 가 다음 provider 로 넘긴다.
+    """
+
+    name = "cf_image"
+    supports = ("image",)
+    API = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
+
+    def __init__(self, account_id: str, api_token: str, config: CFImageConfig, style: str = "", enabled: bool = True,
+                 session: requests.Session | None = None):
+        self.account_id = account_id
+        self.api_token = api_token
+        self.config = config
+        self.style = style
+        self.enabled = enabled
+        self.session = session or requests.Session()
+        self._tried: set[int] = set()
+
+    @property
+    def available(self) -> bool:
+        return bool(self.enabled and self.config.enabled and self.account_id and self.api_token and self.config.model)
+
+    def generate_image(self, prompt: str) -> bytes:
+        """프롬프트로 이미지를 생성해 이미지 bytes 로 반환한다."""
+        cfg = self.config
+        url = self.API.format(account_id=self.account_id, model=cfg.model)
+        payload = {
+            "prompt": prompt, "width": cfg.width, "height": cfg.height,
+            "num_steps": cfg.num_steps, "guidance": cfg.guidance,
+        }
+        if cfg.negative_prompt:
+            payload["negative_prompt"] = cfg.negative_prompt
+
+        def _call() -> bytes:
+            resp = self.session.post(
+                url, json=payload, headers={"Authorization": f"Bearer {self.api_token}"}, timeout=cfg.timeout
+            )
+            if resp.status_code in (401, 403):
+                raise NonRetryableError(
+                    f"Cloudflare 인증/권한 오류 ({resp.status_code}): CLOUDFLARE_ACCOUNT_ID 와"
+                    f" 'Workers AI' 권한이 있는 CLOUDFLARE_API_TOKEN 을 확인하세요: {resp.text[:200]}"
+                )
+            if resp.status_code == 429:
+                raise NonRetryableError(f"Cloudflare Workers AI 무료 한도 초과 (429): {resp.text[:200]}")
+            if resp.status_code in (400, 404):
+                raise NonRetryableError(f"Cloudflare 모델 요청 거부 ({cfg.model}, {resp.status_code}): {resp.text[:200]}")
+            resp.raise_for_status()  # 5xx → 재시도
+            if resp.headers.get("content-type", "").startswith("image/"):
+                return resp.content
+            # flux 계열은 {"result": {"image": "<base64>"}} 로 응답
+            image = (resp.json().get("result") or {}).get("image")
+            if not image:
+                raise RuntimeError(f"Cloudflare 이미지 응답 없음: {resp.text[:200]}")
+            return base64.b64decode(image)
+
+        return retry_call(_call, step=f"Cloudflare Image ({cfg.model})", max_attempts=2, delays=((3, 6),))
+
+    def fetch(self, request: AssetRequest, dest_dir: Path) -> AssetInfo | None:
+        if request.scene_number in self._tried:
+            return None
+        self._tried.add(request.scene_number)
+        prompt = build_image_prompt(request, self.style)
+        data = self.generate_image(prompt)
+        with Image.open(io.BytesIO(data)) as img:
+            w, h = img.size
+            dest = dest_dir / f"scene_{request.scene_number:02d}_cf.png"
+            img.convert("RGB").save(dest)
+        return AssetInfo(
+            scene_number=request.scene_number, media_type="image", local_path=str(dest), source="cf_image",
+            source_id=hashlib.md5(prompt.encode()).hexdigest()[:12],
+            license=f"AI generated (Cloudflare Workers AI {self.config.model})",
+            downloaded_at=now_iso(), generated_by_ai=True, query=prompt, width=w, height=h,
+        )
 
 
 class HuggingFaceImageProvider(AssetProvider):

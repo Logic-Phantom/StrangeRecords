@@ -25,6 +25,7 @@ SOURCE_LABELS = {
     "local": "채널 보유 자료",
     "ai_image": "AI 생성 이미지(Gemini)",
     "hf_image": "AI 생성 이미지(Stable Diffusion XL)",
+    "cf_image": "AI 생성 이미지(Stable Diffusion XL)",
     "procedural": "자체 제작 그래픽",
 }
 

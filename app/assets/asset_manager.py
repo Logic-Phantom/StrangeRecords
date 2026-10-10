@@ -1,11 +1,16 @@
-"""Scene 별 시각자료 수집 (config.assets.providers 순서, 기본: Gemini 이미지 → HF 이미지 → Pexels → Pixabay → 로컬 → 자체 생성)."""
+"""Scene 별 시각자료 수집 (config.assets.providers 순서, 기본: Gemini → Cloudflare → HF 이미지 → Pexels → Pixabay → 로컬 → 자체 생성)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from app.assets.base import AssetProvider, AssetRequest
-from app.assets.image_generator import GeminiImageProvider, HuggingFaceImageProvider, ProceduralImageProvider
+from app.assets.image_generator import (
+    CloudflareImageProvider,
+    GeminiImageProvider,
+    HuggingFaceImageProvider,
+    ProceduralImageProvider,
+)
 from app.assets.local import LocalAssetProvider
 from app.assets.pexels import PexelsAdapter
 from app.assets.pixabay import PixabayAdapter
@@ -18,9 +23,14 @@ logger = get_logger("assets")
 
 
 def build_providers(settings: Settings, gemini_client=None, ai_fallback: bool = True) -> list[AssetProvider]:
-    """ai_fallback=False 면 Hugging Face 이미지도 끈다 (offline 테스트에서 외부 AI 크레딧을 쓰지 않도록)."""
+    """ai_fallback=False 면 대체 AI 이미지(Cloudflare/Hugging Face)도 끈다 (offline 테스트에서 외부 AI 를 호출하지 않도록)."""
     ai = settings.assets.ai_image
+    secrets = settings.secrets
     registry: dict[str, AssetProvider] = {
+        "cf_image": CloudflareImageProvider(
+            secrets.cloudflare_account_id, secrets.cloudflare_api_token, settings.assets.cf_image, ai.style,
+            enabled=ai_fallback,
+        ),
         "pexels": PexelsAdapter(settings.secrets.pexels_api_key, settings.assets),
         "pixabay": PixabayAdapter(settings.secrets.pixabay_api_key, settings.assets),
         "local": LocalAssetProvider(settings.paths.local_images, settings.paths.local_videos),

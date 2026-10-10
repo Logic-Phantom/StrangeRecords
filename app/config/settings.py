@@ -128,8 +128,21 @@ class HFImageConfig(BaseModel):
     timeout: int = 120
 
 
+class CFImageConfig(BaseModel):
+    enabled: bool = False
+    model: str = "@cf/stabilityai/stable-diffusion-xl-base-1.0"
+    width: int = 768
+    height: int = 1344
+    num_steps: int = 20
+    guidance: float = 7.5
+    negative_prompt: str = ""
+    timeout: int = 120
+
+
 class AssetsConfig(BaseModel):
-    providers: list[str] = Field(default_factory=lambda: ["ai_image", "hf_image", "pexels", "pixabay", "local", "procedural"])
+    providers: list[str] = Field(
+        default_factory=lambda: ["ai_image", "cf_image", "hf_image", "pexels", "pixabay", "local", "procedural"]
+    )
     prefer_video: bool = True
     per_page: int = 15
     min_short_side: int = 720
@@ -137,6 +150,7 @@ class AssetsConfig(BaseModel):
     request_timeout: int = 30
     ai_image: AIImageConfig = Field(default_factory=AIImageConfig)
     hf_image: HFImageConfig = Field(default_factory=HFImageConfig)
+    cf_image: CFImageConfig = Field(default_factory=CFImageConfig)
 
 
 class SubtitleConfig(BaseModel):
@@ -234,6 +248,8 @@ class Secrets(BaseModel):
     pexels_api_key: str = ""
     pixabay_api_key: str = ""
     hf_api_key: str = ""
+    cloudflare_account_id: str = ""
+    cloudflare_api_token: str = ""
     youtube_client_id: str = ""
     youtube_client_secret: str = ""
 
@@ -377,6 +393,8 @@ def load_settings(config_path: Path | None = None, env_path: Path | None = None)
         pexels_api_key=os.getenv("PEXELS_API_KEY", ""),
         pixabay_api_key=os.getenv("PIXABAY_API_KEY", ""),
         hf_api_key=os.getenv("HF_API_KEY") or os.getenv("HF_TOKEN", ""),
+        cloudflare_account_id=os.getenv("CLOUDFLARE_ACCOUNT_ID", ""),
+        cloudflare_api_token=os.getenv("CLOUDFLARE_API_TOKEN", ""),
         youtube_client_id=os.getenv("YOUTUBE_CLIENT_ID", ""),
         youtube_client_secret=os.getenv("YOUTUBE_CLIENT_SECRET", ""),
     )

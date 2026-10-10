@@ -6,7 +6,12 @@ from PIL import Image
 
 from app.assets.asset_manager import AssetManager, build_providers
 from app.assets.base import AssetRequest
-from app.assets.image_generator import GeminiImageProvider, HuggingFaceImageProvider, build_image_prompt
+from app.assets.image_generator import (
+    CloudflareImageProvider,
+    GeminiImageProvider,
+    HuggingFaceImageProvider,
+    build_image_prompt,
+)
 from app.schemas import Scene
 from app.utils.retry import NonRetryableError
 
@@ -131,6 +136,74 @@ def test_huggingface_raises_for_pipeline_on_failure(settings, tmp_path):
         assert "402" in str(exc)
     else:
         raise AssertionError("HF 실패 시 예외가 나야 다음 provider 로 넘어간다")
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, content=b"", content_type="image/png", payload=None):
+        self.status_code = status_code
+        self.content = content
+        self.headers = {"content-type": content_type}
+        self.text = str(payload or "")
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise HTTPError(self.status_code)
+
+
+class FakeSession:
+    def __init__(self, response: FakeResponse):
+        self.response = response
+        self.calls: list[dict] = []
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.calls.append({"url": url, "json": json, "headers": headers})
+        return self.response
+
+
+def _cf_manager(settings, session: FakeSession, hf_client: FakeHFClient | None = None):
+    settings.assets.ai_image.enabled = True
+    settings.assets.providers = ["ai_image", "cf_image", "hf_image", "procedural"]
+    settings.secrets.cloudflare_account_id, settings.secrets.cloudflare_api_token = "acc123", "cf_test"
+    settings.secrets.hf_api_key = "hf_test" if hf_client else ""
+    providers = build_providers(settings, FakeClient(fail=NonRetryableError("429 limit: 0")))
+    next(p for p in providers if isinstance(p, CloudflareImageProvider)).session = session
+    if hf_client:
+        next(p for p in providers if isinstance(p, HuggingFaceImageProvider))._client = hf_client
+    return AssetManager(settings, providers)
+
+
+def test_gemini_failure_uses_cloudflare_first(settings, tmp_path):
+    session = FakeSession(FakeResponse(content=_png((768, 1344))))
+    hf = FakeHFClient()
+    assets = _cf_manager(settings, session, hf).collect(_scenes(), tmp_path / "assets", "dark")
+    assert [a.source for a in assets] == ["cf_image"] * 3
+    assert (assets[0].width, assets[0].height) == (768, 1344)
+    call = session.calls[0]
+    assert call["url"].endswith("/accounts/acc123/ai/run/@cf/stabilityai/stable-diffusion-xl-base-1.0")
+    assert call["headers"]["Authorization"] == "Bearer cf_test"
+    assert (call["json"]["width"], call["json"]["height"]) == (768, 1344)
+    assert not hf.calls
+
+
+def test_cloudflare_base64_json_response(settings, tmp_path):
+    import base64
+
+    payload = {"result": {"image": base64.b64encode(_png((512, 512))).decode()}}
+    session = FakeSession(FakeResponse(content_type="application/json", payload=payload))
+    assets = _cf_manager(settings, session).collect(_scenes(1), tmp_path / "assets", "dark")
+    assert assets[0].source == "cf_image" and assets[0].width == 512
+
+
+def test_cloudflare_quota_falls_back_to_huggingface(settings, tmp_path):
+    session = FakeSession(FakeResponse(status_code=429, content_type="application/json", payload={"errors": ["quota"]}))
+    hf = FakeHFClient()
+    assets = _cf_manager(settings, session, hf).collect(_scenes(), tmp_path / "assets", "dark")
+    assert [a.source for a in assets] == ["hf_image"] * 3
+    assert len(session.calls) == 1  # 한도 초과는 이번 작업에서 제외
 
 
 def test_huggingface_unavailable_without_key_or_offline(settings):
