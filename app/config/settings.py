@@ -116,14 +116,27 @@ class AIImageConfig(BaseModel):
     style: str = ""
 
 
+class HFImageConfig(BaseModel):
+    enabled: bool = False
+    model: str = "stabilityai/stable-diffusion-xl-base-1.0"
+    provider: str = "auto"
+    width: int = 768
+    height: int = 1344
+    num_inference_steps: int = 30
+    guidance_scale: float = 7.0
+    negative_prompt: str = ""
+    timeout: int = 120
+
+
 class AssetsConfig(BaseModel):
-    providers: list[str] = Field(default_factory=lambda: ["ai_image", "pexels", "pixabay", "local", "procedural"])
+    providers: list[str] = Field(default_factory=lambda: ["ai_image", "hf_image", "pexels", "pixabay", "local", "procedural"])
     prefer_video: bool = True
     per_page: int = 15
     min_short_side: int = 720
     max_download_mb: int = 80
     request_timeout: int = 30
     ai_image: AIImageConfig = Field(default_factory=AIImageConfig)
+    hf_image: HFImageConfig = Field(default_factory=HFImageConfig)
 
 
 class SubtitleConfig(BaseModel):
@@ -220,6 +233,7 @@ class Secrets(BaseModel):
     gemini_api_key: str = ""
     pexels_api_key: str = ""
     pixabay_api_key: str = ""
+    hf_api_key: str = ""
     youtube_client_id: str = ""
     youtube_client_secret: str = ""
 
@@ -362,6 +376,7 @@ def load_settings(config_path: Path | None = None, env_path: Path | None = None)
         gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
         pexels_api_key=os.getenv("PEXELS_API_KEY", ""),
         pixabay_api_key=os.getenv("PIXABAY_API_KEY", ""),
+        hf_api_key=os.getenv("HF_API_KEY") or os.getenv("HF_TOKEN", ""),
         youtube_client_id=os.getenv("YOUTUBE_CLIENT_ID", ""),
         youtube_client_secret=os.getenv("YOUTUBE_CLIENT_SECRET", ""),
     )

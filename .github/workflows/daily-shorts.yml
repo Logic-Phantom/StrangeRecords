@@ -1,0 +1,119 @@
+# =====================================================================
+# 기묘한 기록 - 매일 22:00(KST) GitHub 서버에서 영상 제작 + YouTube 업로드
+# PC 를 켜 두지 않아도 동작한다.
+#
+# 필요한 Repository secrets (Settings → Secrets and variables → Actions):
+#   GEMINI_API_KEY      (필수)
+#   YOUTUBE_TOKEN_JSON  (필수) 로컬에서 `python -m app.main auth` 로 만든 token.json 내용 전체
+#   HF_API_KEY          (권장) Gemini 이미지 실패 시 Hugging Face 대체 이미지
+#   PEXELS_API_KEY / PIXABAY_API_KEY (선택)
+#
+# 주제 중복 방지/하루 1개 정책에 쓰는 SQLite DB 는 pipeline-state 브랜치에 저장해 다음 실행에 이어 쓴다.
+# =====================================================================
+name: Daily Shorts
+
+on:
+  schedule:
+    # 13:07 UTC = 22:07 KST (정각은 GitHub 혼잡으로 지연이 커서 7분 비켜 둠, 그래도 수십 분 늦을 수 있음)
+    - cron: "7 13 * * *"
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "today = 제작 + 업로드 / test = 제작만 (업로드 안 함)"
+        type: choice
+        options: [today, test]
+        default: today
+
+concurrency:
+  group: daily-shorts
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # pipeline-state 브랜치에 DB 저장
+
+jobs:
+  shorts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      PYTHONUTF8: "1"
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      HF_API_KEY: ${{ secrets.HF_API_KEY }}
+      PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+      PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+      COMMAND: ${{ inputs.command || 'today' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout pipeline state
+        uses: actions/checkout@v4
+        with:
+          ref: pipeline-state
+          path: .state
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Korean font
+        run: sudo apt-get update -q && sudo apt-get install -y -q fonts-nanum
+
+      - name: Install packages
+        run: pip install -r requirements.txt
+
+      - name: Cache Whisper model
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: whisper-models-v1
+
+      - name: Restore DB and YouTube token
+        env:
+          YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
+        run: |
+          mkdir -p data
+          if [ -f .state/database.sqlite ]; then cp .state/database.sqlite data/database.sqlite; fi
+          if [ -z "$GEMINI_API_KEY" ]; then echo "::error::GEMINI_API_KEY secret 이 없습니다"; exit 1; fi
+          if [ -n "$YOUTUBE_TOKEN_JSON" ]; then
+            printf '%s' "$YOUTUBE_TOKEN_JSON" > token.json
+          elif [ "$COMMAND" = "today" ]; then
+            echo "::error::YOUTUBE_TOKEN_JSON secret 이 없습니다 (업로드 불가)"; exit 1
+          fi
+          python -m app.main setup
+          python -m app.main doctor || true
+
+      - name: Make video (and upload)
+        run: |
+          if [ "$COMMAND" = "test" ]; then
+            python -m app.main test
+            exit $?
+          fi
+          # 실패하면 같은 서버에서 실패한 단계부터 이어서 재시도 (중간 파일이 남아 있음)
+          for attempt in 1 2 3; do
+            python -m app.main today && exit 0
+            echo "::warning::today 실패 ($attempt/3)"
+            [ $attempt -lt 3 ] && sleep $((attempt * 300))
+          done
+          exit 1
+
+      - name: Save DB to pipeline-state
+        if: always()
+        run: |
+          [ -f data/database.sqlite ] || exit 0
+          cp data/database.sqlite .state/database.sqlite
+          cd .state
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add database.sqlite
+          git diff --cached --quiet || git commit -q -m "state: $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M') (run ${{ github.run_id }})"
+          git push -q origin HEAD:pipeline-state
+
+      - name: Keep video for 3 days
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shorts-${{ github.run_id }}
+          path: output/videos/*.mp4
+          retention-days: 3
+          if-no-files-found: ignore

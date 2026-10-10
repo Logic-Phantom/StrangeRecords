@@ -1,9 +1,9 @@
 # 기묘한 기록 (StrangeRecords) — AI YouTube Shorts 자동 제작·업로드 시스템
 
-매일 **새로운 주제 선정 → 자료 조사 → 대본 → 음성 → 시각자료 → 자막 → 편집 → 품질 검사 → YouTube 업로드 → 12:00 예약 공개 → 이력 저장** 을 자동으로 수행하는 Python 프로젝트입니다.
+매일 **새로운 주제 선정 → 자료 조사 → 대본 → 음성 → 시각자료 → 자막 → 편집 → 품질 검사 → YouTube 업로드(즉시 공개) → 이력 저장** 을 자동으로 수행하는 Python 프로젝트입니다. (Windows 작업 스케줄러로 매일 22:00 실행)
 
 - AI 엔진: **Google Gemini API 하나만 사용** (기본 `gemini-3.5-flash`, 과부하 시 자동 대체 모델 전환, 모델명은 `config.yaml` 한 곳에서 관리)
-- 음성: Edge TTS (무료) · 시각자료: **대본 기반 Gemini AI 장면 이미지** → Pexels / Pixabay (무료 API) · 자막: faster-whisper (로컬) · 편집: FFmpeg · DB: SQLite
+- 음성: Edge TTS (무료) · 시각자료: **대본 기반 Gemini AI 장면 이미지** → **Hugging Face SDXL (대체 AI 이미지)** → Pexels / Pixabay (무료 API) · 자막: faster-whisper (로컬) · 편집: FFmpeg · DB: SQLite
 - 출력: **1080x1920 · 9:16 · 30fps · H.264 · AAC · MP4**, 한국어 40~60초
 
 ---
@@ -15,7 +15,7 @@
 → [4] 최종 주제 → [5] 자료 조사(Wikipedia + Gemini 사실/추측 구분) → [6] Gemini 대본(Hook 포함)
 → [7] 대본 검증(길이/금지표현/사실여부 고지) → [8] Gemini Scene 분할 + 영어 검색어
 → [9] Edge TTS (Scene 별 합성 → 실제 길이 확정, 길면 속도 자동 조정)
-→ [10] AI 장면 이미지(Scene 별 visual_prompt) → Pexels → Pixabay → 로컬 → 자체 그래픽 순으로 자료 수집
+→ [10] AI 장면 이미지(Scene 별 visual_prompt: Gemini → Hugging Face) → Pexels → Pixabay → 로컬 → 자체 그래픽 순으로 자료 수집
 → [11] faster-whisper 단어 타이밍 + 대본 텍스트 정렬 → Shorts 자막
 → [12] FFmpeg: 9:16 crop / Ken Burns / 전환 / 자막 / BGM 덕킹 / 효과음 / -14 LUFS
 → [13] 품질 검사(실패 시 업로드 금지) → [14] Gemini 제목·설명·해시태그 (+ 출처 자동 표기)
@@ -54,12 +54,14 @@ bash scripts/setup_macos.sh
 | `GEMINI_API_KEY` | ✅ | 무료 티어 (한도/모델은 수시 변경) | https://aistudio.google.com/apikey |
 | `PEXELS_API_KEY` | 권장 | 무료 | https://www.pexels.com/api/ |
 | `PIXABAY_API_KEY` | 권장 | 무료 | https://pixabay.com/api/docs/ |
+| `HF_API_KEY` | 권장 | 무료 월 크레딧 | https://huggingface.co/settings/tokens → Fine-grained 토큰, **"Make calls to Inference Providers"** 권한 체크 |
 | `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` | 업로드 시 | 무료 (일일 할당량 10,000 units) | Google Cloud Console → YouTube Data API v3 사용 설정 → OAuth 클라이언트 ID(**데스크톱 앱**) |
 | Edge TTS | - | 무료, Key 불필요 | - |
 | Wikipedia | - | 무료, Key 불필요 | - |
 
 - 시각자료는 **Gemini 이미지 모델이 Scene 마다 대본 내용대로 그린 이미지**를 먼저 사용합니다 (`assets.ai_image`). 같은 `GEMINI_API_KEY` 를 쓰지만, 무료 티어에서 이미지 모델이 막혀 있으면 [Google AI Studio](https://aistudio.google.com/) 에서 **결제(Billing) 연결**이 필요합니다 (장당 약 $0.04, 영상 1개 6~9장).
-- AI 이미지가 실패하면 Pexels/Pixabay → `assets/images`, `assets/videos` 의 로컬 자료 → 자체 제작 그래픽(Pillow, 어두운 배경)으로 대체되어 **제작은 멈추지 않습니다**. 영상이 어두운 배경만 나오면 로그에서 `ai_image 자료 수집 실패` 원인을 확인하세요.
+- Gemini 이미지가 실패(무료 티어 `limit: 0`, 429 RESOURCE_EXHAUSTED, 권한 오류)하면 **같은 Scene 에서 바로 Hugging Face Inference API** (`assets.hf_image`, 기본 `stabilityai/stable-diffusion-xl-base-1.0`, 768x1344)로 같은 프롬프트를 그립니다. `provider: "auto"` 라 그 모델을 서비스 중인 Inference Provider(현재 SDXL 은 fal-ai)로 자동 라우팅되며, 토큰 권한 없음(403)·크레딧 소진(402)이면 이번 작업에서 제외하고 Pexels 로 넘어갑니다.
+- AI 이미지가 모두 실패하면 Pexels/Pixabay → `assets/images`, `assets/videos` 의 로컬 자료 → 자체 제작 그래픽(Pillow, 어두운 배경)으로 대체되어 **제작은 멈추지 않습니다**. 영상이 어두운 배경만 나오면 로그에서 `ai_image 자료 수집 실패` 원인을 확인하세요.
 - Gemini 무료 모델/한도가 바뀌면 `python -m app.main models` 로 사용 가능한 모델을 확인하고 `config.yaml` 의 `gemini.model` (또는 `.env` 의 `GEMINI_MODEL`)만 바꾸면 됩니다.
 - 기본 모델이 과부하(503)/한도 초과(429)로 3회 실패하면 `gemini.fallback_models` 순서(`gemini-flash-latest` → `gemini-2.5-flash` → `gemini-flash-lite-latest`)로 자동 전환하고, 그 실행 동안은 전환된 모델을 유지합니다.
 - 하루 Gemini 호출 수: 주제 1 + 중복 판단 1 + 자료 정리 1 + 대본 1 + Scene 1 + 메타데이터 1 ≈ **6회** (+ 검증 실패 시 재요청).
@@ -125,15 +127,35 @@ youtube:
 
 ## 7. 자동 실행
 
-### Windows 작업 스케줄러 (기본)
+### GitHub Actions (기본, PC 꺼져 있어도 동작)
+
+`.github/workflows/daily-shorts.yml` 이 매일 **22:07 KST** (GitHub 혼잡 시 수십 분 지연 가능) GitHub 서버(Ubuntu)에서 `today` 를 실행해 제작 → 업로드합니다.
+
+1. 저장소 **Settings → Secrets and variables → Actions → New repository secret** 에 등록
+   | Secret | 값 |
+   |---|---|
+   | `GEMINI_API_KEY` | Gemini API Key (필수) |
+   | `YOUTUBE_TOKEN_JSON` | 로컬 `token.json` 파일 내용 전체 (필수, `Get-Content token.json -Raw \| Set-Clipboard` 로 복사) |
+   | `HF_API_KEY` | Hugging Face 토큰 (권장) |
+   | `PEXELS_API_KEY` / `PIXABAY_API_KEY` | 선택 |
+2. **Actions → Daily Shorts → Run workflow** 로 수동 실행해 확인 (`test` = 제작만, `today` = 제작 + 업로드)
+- 주제 이력/하루 1개 정책 DB(`data/database.sqlite`)는 실행마다 `pipeline-state` 브랜치에 저장되어 다음 실행이 이어 씁니다.
+- 실패하면 같은 서버에서 5분/10분 뒤 실패한 단계부터 최대 3회 실행합니다. 완성 영상은 Actions 실행 화면의 Artifacts 에 3일 보관됩니다.
+- ⚠️ OAuth 동의 화면이 "테스트" 상태면 refresh token 이 7일 뒤 만료되어 업로드가 멈춥니다 → [Google 인증 플랫폼 → 대상](https://console.cloud.google.com/auth/audience) 에서 **앱 게시(프로덕션)** 후 `auth` 를 다시 실행하고 `YOUTUBE_TOKEN_JSON` 을 갱신하세요.
+- 공개 저장소는 60일 동안 활동이 없으면 예약 워크플로가 비활성화될 수 있습니다 (Actions 화면에서 다시 Enable).
+- 클라우드와 Windows 작업 스케줄러를 동시에 쓰면 DB 가 달라 하루 2개가 올라가므로 하나만 사용합니다.
+
+### Windows 작업 스케줄러 (PC 에서 실행할 때)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\register_windows_task.ps1            # 매일 10:00
-powershell -ExecutionPolicy Bypass -File scripts\register_windows_task.ps1 -Time 09:30
+powershell -ExecutionPolicy Bypass -File scripts\register_windows_task.ps1                       # 매일 22:00 (+23:00 재시도)
+powershell -ExecutionPolicy Bypass -File scripts\register_windows_task.ps1 -Time 21:30 -RetryTime ""
 ```
 
 - `run_daily.bat` 은 자기 위치를 프로젝트 루트로 사용하므로 폴더를 옮겨도 동작합니다.
-- 10:00 에 PC 가 꺼져 있었다면 켜진 직후 실행(StartWhenAvailable), 절전 상태면 깨워서 실행(WakeToRun)합니다.
+- 22:00 에 PC 가 꺼져 있었다면 켜진 직후 실행(StartWhenAvailable), 절전 상태면 깨워서 실행(WakeToRun), 네트워크 연결 후 실행(RunOnlyIfNetworkAvailable)합니다. `run_daily.bat` 도 DNS 가 붙을 때까지 최대 10분 기다립니다.
+- 23:00 재시도 실행은 하루 1개 정책 덕분에 이미 업로드했으면 바로 끝나고, 실패했으면 실패 단계부터 이어서 실행합니다.
+- PC 가 켜져 있고 Windows 에 로그인된 상태여야 실행됩니다.
 - 실행 로그: `logs/task_scheduler.log`, 일자별 상세 로그: `logs/YYYY-MM-DD.log`
 
 ### macOS (launchd)
@@ -218,8 +240,9 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 | YouTube OAuth / Upload | ✅ 비공개 업로드 성공 |
 | YouTube 자동 공개 (`publish_mode: public`) | ⏳ 구현 완료, API 감사 통과 후 확인 필요 (미인증 프로젝트는 비공개로 잠김, 업로드 직후 상태 확인해 경고) |
 | AI 장면 이미지 (Gemini) | ⏳ 구현 + 테스트 완료, Gemini 결제 연결 후 확인 필요 (무료 티어는 이미지 모델 한도 0) |
+| AI 장면 이미지 대체 (Hugging Face SDXL) | ⏳ 구현 + 테스트 완료, `HF_API_KEY` 등록됨 → 토큰에 Inference Providers 권한 추가 후 확인 필요 (현재 403) |
 | Pexels / Pixabay | ⏳ 구현 완료, API Key 입력 후 확인 필요 (현재는 자체 그래픽으로 대체) |
-| Windows Scheduler / run_daily.bat | ✅ Windows PC 에 등록 (매일 10:00), `token.json` 준비 후 업로드 동작 |
+| Windows Scheduler / run_daily.bat | ✅ Windows PC 에 등록 (매일 22:00 + 23:00 재시도), `token.json` 준비 후 업로드 동작 |
 | Windows 실제 제작 | ✅ Windows 11 / Python 3.14 에서 `today` 로 영상 제작·품질 검사 통과 (2026-10-08) |
 | README / .env.example | ✅ |
 
@@ -304,12 +327,31 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 - 시각자료: AI 이미지가 무료 티어 한도 0 으로 첫 Scene 에서 제외 → Pexels Key 도 없어 자체 그래픽(어두운 그라디언트) 배경 사용
 - 이 PC 의 DB 는 새로 만들어져 기존 주제 0개 → macOS 에서 만든 영상(디아틀로프 고개 등)과의 중복 검사가 되지 않음
 
+### 2026-10-10 — Hugging Face 대체 AI 이미지 / 매일 22:00 자동 실행
+
+**Hugging Face 대체 이미지 (`HuggingFaceImageProvider`)**
+- provider 순서 `ai_image → hf_image → pexels → pixabay → local → procedural`. Gemini 가 NonRetryableError 로 제외되면 AssetManager 가 같은 Scene 에서 곧바로 `hf_image` 를 호출
+- Gemini 이미지 429 는 재시도 대기 없이 다음 모델 → 모두 막히면 다음 provider 로 (기존: 5~10초 대기 후 재시도)
+- `huggingface_hub.InferenceClient(provider="auto", api_key=HF_API_KEY)` 의 `text_to_image` 로 SDXL 768x1344 생성 (요청 헤더 `Authorization: Bearer`)
+- 확인 결과: 예전 `api-inference.huggingface.co` 는 DNS 가 없어졌고, SDXL 은 `hf-inference` 에서 내려가 현재 **fal-ai** provider 로만 서비스 → 직접 URL 대신 `provider="auto"` 라우팅 사용
+- 등록한 토큰은 유효(whoami 200)하지만 `403 ... does not have sufficient permissions to call Inference Providers` → 토큰 권한 추가 필요. 이 경우 0.5초 만에 제외하고 다음 provider 로 진행되는 것 확인
+- offline 테스트(`test --offline`)와 pytest 는 HF 를 호출하지 않음, 자동 테스트 44개 통과
+
+**매일 자동 실행 22:00**
+- 10/10 오전 실행 실패 원인: 절전 해제 직후 DNS 미연결(`getaddrinfo failed`)로 Gemini 3회 실패 → `run_daily.bat` 에 네트워크 대기(최대 10분), 작업에 `RunOnlyIfNetworkAvailable` 추가
+- 작업 스케줄러 `StrangeRecords Daily Shorts` 를 매일 22:00 + 23:00(재시도)로 다시 등록, `schedule.generate_time: "22:00"`
+
+**YouTube 인증 + 클라우드 자동 실행**
+- Windows PC `.env` 에 OAuth 클라이언트 등록 → `auth` 성공 (채널: 팬텀로즥), `token.json` 저장
+- PC 를 켜지 않아도 되도록 GitHub Actions 워크플로 추가 (매일 22:07 KST), DB 는 `pipeline-state` 브랜치로 이어 씀 → 중복 업로드 방지를 위해 Windows 작업 스케줄러 작업은 비활성화
+
 ### 남은 작업
 
-1. Google AI Studio 에서 Gemini API 프로젝트에 결제 연결 → AI 장면 이미지 확인 (안 하면 Pexels/자체 그래픽으로 대체)
-2. Pexels(및 Pixabay) API Key 등록 → AI 이미지 실패 시 실제 스톡 영상으로 대체
-3. Windows PC: `.env` 에 `YOUTUBE_CLIENT_ID/SECRET` 입력 → `.venv\Scripts\python.exe -m app.main auth` 로 `token.json` 생성
-4. YouTube API 감사 신청 → 통과해야 공개/예약 공개가 실제로 적용됨
-5. OAuth 동의 화면을 "프로덕션"으로 게시 (테스트 상태는 토큰 7일 만료 → 자동 업로드가 1주 뒤 멈춤)
-6. 인증 후 `.venv\Scripts\python.exe -m app.main upload` 로 대기 중인 DB 쿠퍼 영상 업로드 (오늘 안 올리면 내일 10:00 실행은 새 영상을 만든다)
-7. macOS 의 `data/database.sqlite` 를 이 PC 로 복사 → 기존 주제 중복 방지 유지
+1. https://huggingface.co/settings/tokens 에서 등록한 토큰을 Edit → **"Make calls to Inference Providers"** 체크 → Hugging Face 대체 이미지 동작 (`.env` 수정 불필요)
+2. Google AI Studio 에서 Gemini API 프로젝트에 결제 연결 → AI 장면 이미지 확인 (안 하면 HF/Pexels/자체 그래픽으로 대체)
+3. Pexels(및 Pixabay) API Key 등록 → AI 이미지 실패 시 실제 스톡 영상으로 대체
+4. **GitHub 저장소 Secrets 에 `GEMINI_API_KEY`, `YOUTUBE_TOKEN_JSON`, `HF_API_KEY` 등록 → Actions 에서 수동 실행으로 확인 (등록 전에는 클라우드 자동 실행이 실패)**
+5. YouTube API 감사 신청 → 통과해야 공개/예약 공개가 실제로 적용됨
+6. OAuth 동의 화면을 "프로덕션"으로 게시 (테스트 상태는 토큰 7일 만료 → 자동 업로드가 1주 뒤 멈춤)
+7. 인증 후 `.venv\Scripts\python.exe -m app.main upload` 로 대기 중인 DB 쿠퍼 영상 업로드
+8. macOS 의 `data/database.sqlite` 를 이 PC 로 복사 → 기존 주제 중복 방지 유지

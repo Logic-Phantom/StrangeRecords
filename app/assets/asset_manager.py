@@ -1,11 +1,11 @@
-"""Scene 별 시각자료 수집 (config.assets.providers 순서, 기본: AI 이미지 → Pexels → Pixabay → 로컬 → 자체 생성)."""
+"""Scene 별 시각자료 수집 (config.assets.providers 순서, 기본: Gemini 이미지 → HF 이미지 → Pexels → Pixabay → 로컬 → 자체 생성)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from app.assets.base import AssetProvider, AssetRequest
-from app.assets.image_generator import GeminiImageProvider, ProceduralImageProvider
+from app.assets.image_generator import GeminiImageProvider, HuggingFaceImageProvider, ProceduralImageProvider
 from app.assets.local import LocalAssetProvider
 from app.assets.pexels import PexelsAdapter
 from app.assets.pixabay import PixabayAdapter
@@ -17,13 +17,17 @@ from app.utils.retry import NonRetryableError
 logger = get_logger("assets")
 
 
-def build_providers(settings: Settings, gemini_client=None) -> list[AssetProvider]:
+def build_providers(settings: Settings, gemini_client=None, ai_fallback: bool = True) -> list[AssetProvider]:
+    """ai_fallback=False 면 Hugging Face 이미지도 끈다 (offline 테스트에서 외부 AI 크레딧을 쓰지 않도록)."""
     ai = settings.assets.ai_image
     registry: dict[str, AssetProvider] = {
         "pexels": PexelsAdapter(settings.secrets.pexels_api_key, settings.assets),
         "pixabay": PixabayAdapter(settings.secrets.pixabay_api_key, settings.assets),
         "local": LocalAssetProvider(settings.paths.local_images, settings.paths.local_videos),
         "ai_image": GeminiImageProvider(gemini_client, [ai.model, *ai.fallback_models], ai.enabled, ai.style),
+        "hf_image": HuggingFaceImageProvider(
+            settings.secrets.hf_api_key, settings.assets.hf_image, ai.style, enabled=ai_fallback
+        ),
         "procedural": ProceduralImageProvider(),
     }
     providers = [registry[name] for name in settings.assets.providers if name in registry]

@@ -6,7 +6,7 @@ from PIL import Image
 
 from app.assets.asset_manager import AssetManager, build_providers
 from app.assets.base import AssetRequest
-from app.assets.image_generator import GeminiImageProvider, build_image_prompt
+from app.assets.image_generator import GeminiImageProvider, HuggingFaceImageProvider, build_image_prompt
 from app.schemas import Scene
 from app.utils.retry import NonRetryableError
 
@@ -72,3 +72,70 @@ def test_ai_image_disabled_without_client(settings):
     settings.assets.ai_image.enabled = True
     provider = next(p for p in build_providers(settings, None) if isinstance(p, GeminiImageProvider))
     assert not provider.available
+
+
+class HTTPError(Exception):
+    def __init__(self, status_code: int):
+        super().__init__(f"HTTP {status_code}")
+        self.response = type("Resp", (), {"status_code": status_code})()
+
+
+class FakeHFClient:
+    def __init__(self, fail: Exception | None = None):
+        self.fail = fail
+        self.calls: list[dict] = []
+
+    def text_to_image(self, prompt, **kwargs):
+        self.calls.append({"prompt": prompt, **kwargs})
+        if self.fail:
+            raise self.fail
+        return Image.new("RGB", (kwargs["width"], kwargs["height"]), (30, 30, 50))
+
+
+def _hf_manager(settings, gemini_fail: Exception | None, hf_client: FakeHFClient) -> tuple[AssetManager, FakeClient]:
+    settings.assets.ai_image.enabled = True
+    settings.assets.providers = ["ai_image", "hf_image", "procedural"]
+    settings.secrets.hf_api_key = "hf_test"
+    gemini = FakeClient(fail=gemini_fail)
+    providers = build_providers(settings, gemini)
+    next(p for p in providers if isinstance(p, HuggingFaceImageProvider))._client = hf_client
+    return AssetManager(settings, providers), gemini
+
+
+def test_gemini_quota_falls_back_to_huggingface_immediately(settings, tmp_path):
+    hf = FakeHFClient()
+    manager, gemini = _hf_manager(settings, NonRetryableError("429 RESOURCE_EXHAUSTED limit: 0"), hf)
+    assets = manager.collect(_scenes(), tmp_path / "assets", "dark", context="메리 셀레스트호")
+    assert [a.source for a in assets] == ["hf_image"] * 3  # 첫 Scene 부터 HF 가 이어 받음
+    assert all(a.generated_by_ai for a in assets)
+    assert (assets[0].width, assets[0].height) == (768, 1344)
+    assert len(gemini.prompts) == 1
+    assert hf.calls[0]["model"] == "stabilityai/stable-diffusion-xl-base-1.0"
+    assert "scene 1" in hf.calls[0]["prompt"] and "메리 셀레스트호" in hf.calls[0]["prompt"]
+
+
+def test_huggingface_auth_error_passes_to_next_provider(settings, tmp_path):
+    hf = FakeHFClient(fail=HTTPError(403))
+    manager, _ = _hf_manager(settings, NonRetryableError("quota"), hf)
+    assets = manager.collect(_scenes(), tmp_path / "assets", "dark")
+    assert [a.source for a in assets] == ["procedural"] * 3
+    assert len(hf.calls) == 1  # 권한 오류는 이번 작업에서 제외 (Scene 마다 재시도하지 않음)
+
+
+def test_huggingface_raises_for_pipeline_on_failure(settings, tmp_path):
+    settings.secrets.hf_api_key = "hf_test"
+    provider = HuggingFaceImageProvider("hf_test", settings.assets.hf_image, client=FakeHFClient(fail=HTTPError(402)))
+    try:
+        provider.fetch(AssetRequest(1, "ship", "image", 4, visual_prompt="ship"), tmp_path)
+    except NonRetryableError as exc:
+        assert "402" in str(exc)
+    else:
+        raise AssertionError("HF 실패 시 예외가 나야 다음 provider 로 넘어간다")
+
+
+def test_huggingface_unavailable_without_key_or_offline(settings):
+    hf = settings.assets.hf_image
+    assert not HuggingFaceImageProvider("", hf).available
+    settings.secrets.hf_api_key = "hf_test"
+    offline = next(p for p in build_providers(settings, None, ai_fallback=False) if isinstance(p, HuggingFaceImageProvider))
+    assert not offline.available

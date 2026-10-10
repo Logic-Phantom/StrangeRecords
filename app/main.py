@@ -213,6 +213,8 @@ def cmd_doctor(settings: Settings, args: argparse.Namespace) -> int:
     line("GEMINI_API_KEY", bool(s.gemini_api_key), "설정됨" if s.gemini_api_key else "없음 (필수)")
     ai = settings.assets.ai_image
     line("AI 장면 이미지", ai.enabled, f"{ai.model} (무료 티어는 한도 0 → 결제 연결 필요)" if ai.enabled else "꺼짐 (assets.ai_image.enabled)", required=False)
+    hf = settings.assets.hf_image
+    line("HF_API_KEY", bool(s.hf_api_key and hf.enabled), f"{hf.model} (Gemini 이미지 실패 시 대체)" if s.hf_api_key and hf.enabled else "없음/꺼짐 → Gemini 실패 시 Pexels 로", required=False)
     line("PEXELS_API_KEY", bool(s.pexels_api_key), "설정됨" if s.pexels_api_key else "없음 → Pixabay/로컬/자체 그래픽 사용", required=False)
     line("PIXABAY_API_KEY", bool(s.pixabay_api_key), "설정됨" if s.pixabay_api_key else "없음", required=False)
     yt_client = bool(s.youtube_client_id and s.youtube_client_secret) or (settings.paths.root / settings.youtube.client_secrets_file).exists()

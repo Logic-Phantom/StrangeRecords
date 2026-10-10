@@ -1,5 +1,7 @@
 # AI (Gemini 전용)
 google-genai>=1.0
+# Gemini 이미지 실패 시 대체 AI 이미지 (Hugging Face Inference Providers, provider="auto")
+huggingface_hub>=0.33
 
 # 설정 / 모델
 python-dotenv>=1.0

@@ -210,6 +210,9 @@ class GeminiClient:
                         "Gemini 이미지 모델은 무료 티어 한도가 0 입니다. Google AI Studio(https://aistudio.google.com/)"
                         " 에서 이 API Key 의 프로젝트에 결제(Billing)를 연결하면 AI 장면 이미지가 생성됩니다."
                     ) from exc
+                if code == 429:
+                    # RESOURCE_EXHAUSTED: 기다리지 않고 다음 모델 → 모두 막히면 다음 provider(Hugging Face 등)
+                    raise NonRetryableError(f"Gemini 이미지 한도 초과 (429): {exc}") from exc
                 raise
             for candidate in response.candidates or []:
                 for part in (candidate.content.parts if candidate.content else None) or []:
@@ -228,9 +231,9 @@ class GeminiClient:
                 return data, mime, model
             except NonRetryableError as exc:
                 last = exc
-                cause = exc.__cause__
-                if getattr(cause, "code", None) == 404:
-                    logger.warning("이미지 모델 %s 없음 → 다음 모델", model)
+                cause_code = getattr(exc.__cause__, "code", None)
+                if cause_code == 404 or (cause_code == 429 and "limit: 0" not in str(exc.__cause__)):
+                    logger.warning("이미지 모델 %s 사용 불가(%s) → 다음 모델", model, cause_code)
                     continue
                 raise
             except RetryError as exc:

@@ -117,9 +117,10 @@ voice:
 # 시각자료
 # ---------------------------------------------------------------------
 assets:
-  # 우선순위: ai_image(대본 기반 AI 장면 이미지) → pexels → pixabay → local(assets/images, assets/videos) → procedural
-  # AI 이미지가 실패(한도 초과/결제 미연결 등)하면 자동으로 다음 provider 로 넘어간다.
-  providers: ["ai_image", "pexels", "pixabay", "local", "procedural"]
+  # 우선순위: ai_image(Gemini AI 장면 이미지) → hf_image(Hugging Face SDXL, Gemini 실패 시 대체)
+  #          → pexels → pixabay → local(assets/images, assets/videos) → procedural
+  # 앞 provider 가 실패(한도 초과/결제 미연결 등)하면 같은 Scene 에서 바로 다음 provider 로 넘어간다.
+  providers: ["ai_image", "hf_image", "pexels", "pixabay", "local", "procedural"]
   prefer_video: true
   per_page: 15
   min_short_side: 720
@@ -134,6 +135,19 @@ assets:
     fallback_models: ["gemini-2.5-flash-image"]
     # 모든 장면에 공통으로 붙는 화풍 (영상 전체 톤 통일)
     style: "cinematic photorealistic still frame, film grain, 35mm"
+  hf_image:
+    # Gemini 이미지 실패 시 Hugging Face Inference API 로 같은 프롬프트(+ ai_image.style)를 그린다.
+    # .env 의 HF_API_KEY 필요 (토큰 권한: "Make calls to Inference Providers"). 무료 계정은 월 크레딧 한도 내 사용.
+    enabled: true
+    model: "stabilityai/stable-diffusion-xl-base-1.0"
+    # auto: 이 모델을 서비스하는 Inference Provider 로 자동 라우팅 (hf-inference, fal-ai 등)
+    provider: "auto"
+    width: 768      # 9:16 (SDXL 권장 해상도), 렌더 단계에서 1080x1920 으로 맞춘다
+    height: 1344
+    num_inference_steps: 30
+    guidance_scale: 7.0
+    negative_prompt: "text, letters, caption, watermark, logo, signature, blurry, lowres, deformed, extra limbs"
+    timeout: 120
 
 # ---------------------------------------------------------------------
 # 자막 (faster-whisper)
@@ -223,7 +237,7 @@ schedule:
   enabled: true
   daily_count: 1
   timezone: "Asia/Seoul"
-  generate_time: "10:00"
+  generate_time: "22:00"       # Windows 작업 스케줄러 등록 시각과 맞출 것 (register_windows_task.ps1)
   upload_time: "12:00"
 
 retry:
