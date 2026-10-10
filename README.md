@@ -243,7 +243,7 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 | YouTube 자동 공개 (`publish_mode: public`) | ✅ 클라우드 업로드 영상이 YouTube API 조회 결과 `privacyStatus: public` (2026-10-10) |
 | GitHub Actions 클라우드 자동 실행 | ✅ 수동 실행으로 제작 → 업로드 → DB 저장 성공 (약 5분), 매일 22:07 KST 예약 |
 | AI 장면 이미지 (Gemini) | ⏳ 구현 + 테스트 완료, Gemini 결제 연결 후 확인 필요 (무료 티어는 이미지 모델 한도 0) |
-| AI 장면 이미지 대체 (Hugging Face SDXL) | ⏳ 구현 + 테스트 완료, `HF_API_KEY` 등록됨 → 토큰에 Inference Providers 권한 추가 후 확인 필요 (현재 403) |
+| AI 장면 이미지 대체 (Hugging Face SDXL) | ⏳ 구현 + 테스트 완료, 토큰 권한 OK → 계정 크레딧 0 이라 `402 Payment Required` (fal-ai, hf-inference 모두). 크레딧 충전 시 동작, 그 전에는 자동으로 다음 provider 사용 |
 | Pexels / Pixabay | ⏳ 구현 완료, API Key 입력 후 확인 필요 (현재는 자체 그래픽으로 대체) |
 | Windows Scheduler / run_daily.bat | ✅ 등록 (매일 22:00 + 23:00 재시도), 현재는 클라우드 사용 중이라 **비활성화** (중복 업로드 방지) |
 | Windows 실제 제작 | ✅ Windows 11 / Python 3.14 에서 `today` 로 영상 제작·품질 검사 통과 (2026-10-08) |
@@ -364,7 +364,7 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 ### 남은 작업
 
 1. **영상 화면 품질 (가장 중요)**: 지금은 모든 장면이 어두운 그라디언트 배경. 아래 중 하나 이상 필요
-   - https://huggingface.co/settings/tokens 에서 등록한 토큰 Edit → **"Make calls to Inference Providers"** 체크 (Secret 수정 불필요, 무료 월 크레딧 한도 내)
+   - Hugging Face: 토큰 권한은 추가 완료(2026-10-10), 하지만 계정 크레딧이 0 이라 402 → https://huggingface.co/settings/billing 에서 크레딧 충전 시 동작 (영상 1개당 이미지 7장 내외)
    - Pexels API Key 발급(무료) → GitHub Secret `PEXELS_API_KEY` + 로컬 `.env` 에 등록
    - Google AI Studio 에서 Gemini API 프로젝트에 결제 연결 (장당 약 $0.04)
 2. 앱 로고를 넣고 싶으면 브랜드 인증 심사 필요 (안 해도 동작에 문제 없음)
