@@ -16,6 +16,8 @@ edge-tts>=6.1
 
 # 자막 (faster-whisper 는 PyAV 를 포함하므로 ffprobe 가 없을 때 미디어 분석에도 사용)
 faster-whisper>=1.0
+# PyAV 17+ 는 av.open(metadata_errors=...) 를 없애서 faster-whisper 1.2.1 의 오디오 디코딩이 실패한다
+av>=11,<17
 
 # 자막 이미지 / 로컬 placeholder 이미지 렌더링
 Pillow>=10.0

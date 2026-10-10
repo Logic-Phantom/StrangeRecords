@@ -246,7 +246,7 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 | YouTube 자동 공개 (`publish_mode: public`) | ✅ 클라우드 업로드 영상이 YouTube API 조회 결과 `privacyStatus: public` (2026-10-10) |
 | GitHub Actions 클라우드 자동 실행 | ✅ 수동 실행으로 제작 → 업로드 → DB 저장 성공 (약 5분), 매일 22:07 KST 예약 |
 | AI 장면 이미지 (Gemini) | ⏳ 구현 + 테스트 완료, Gemini 결제 연결 후 확인 필요 (무료 티어는 이미지 모델 한도 0) |
-| AI 장면 이미지 대체 (Cloudflare Workers AI SDXL, 무료) | ⏳ 구현 + 테스트 완료, `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` 등록 후 확인 필요 |
+| AI 장면 이미지 대체 (Cloudflare Workers AI SDXL, 무료) | ✅ 실제 제작 확인: 8개 Scene 모두 768x1344 AI 이미지 (장당 약 11초), GitHub Secrets 등록 완료 |
 | AI 장면 이미지 대체 (Hugging Face SDXL) | ⏳ 구현 + 테스트 완료, 토큰 권한 OK → 계정 크레딧 0 이라 `402 Payment Required` (fal-ai, hf-inference 모두). 크레딧 충전 시 동작, 그 전에는 자동으로 다음 provider 사용 |
 | Pexels / Pixabay | ⏳ 구현 완료, API Key 입력 후 확인 필요 (현재는 자체 그래픽으로 대체) |
 | Windows Scheduler / run_daily.bat | ✅ 등록 (매일 22:00 + 23:00 재시도), 현재는 클라우드 사용 중이라 **비활성화** (중복 업로드 방지) |
@@ -370,15 +370,20 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 - 무료 대안으로 Cloudflare Workers AI 추가: 무료 플랜 하루 10,000 Neurons, `@cf/stabilityai/stable-diffusion-xl-base-1.0` 은 단가 0원, 768x1344 지정 가능
 - provider 순서 `ai_image → cf_image → hf_image → pexels → pixabay → local → procedural`, 응답이 PNG 바이너리/ base64 JSON 둘 다 처리
 - 401/403/429/400/404 는 이번 작업에서 제외, 5xx 는 1회 재시도. 자동 테스트 47개 통과
+- Cloudflare 가입 후 API 토큰 생성이 계속 실패 → 원인은 계정 이메일 미인증 (인증 메일 확인 후 생성 성공)
+- 실제 확인: 단일 이미지 768x1344 11초 → `test` 전체 제작(job `20261010-130140`, "1518년 춤의 전염병")에서 **8개 Scene 모두 `cf_image`**, 369초에 완성. 같은 실행에서 Gemini 텍스트 모델 503 과부하 → `gemini-flash-latest` 로 자동 전환되는 것도 확인
+
+**Whisper 자막 타이밍 오류 수정**
+- `TypeError: open() got an unexpected keyword argument 'metadata_errors'` → PyAV 17+ 에서 `av.open(metadata_errors=)` 가 없어져 faster-whisper 1.2.1(최신)의 오디오 디코딩이 실패, 자막이 음성 길이 비율 배분으로 대체되고 있었음 (클라우드도 최신 PyAV 설치라 같은 문제)
+- `requirements.txt` 에 `av>=11,<17` 고정 → PyAV 16.1.0 에서 Whisper 단어 76개 타이밍 정상 인식 확인
 
 ### 남은 작업
 
-1. **영상 화면 품질 (가장 중요)**: 지금은 모든 장면이 어두운 그라디언트 배경. 아래 중 하나 이상 필요
-   - **Cloudflare Workers AI (무료, 권장)**: Account ID + "Workers AI" API 토큰 → GitHub Secrets `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN` + 로컬 `.env`
+1. 시각자료 보조 수단(선택): Cloudflare 무료 한도(하루 10,000 Neurons)나 장애에 대비
    - Pixabay API Key (무료, 이미 구현됨) → GitHub Secret `PIXABAY_API_KEY`
-   - Hugging Face: 토큰 권한은 추가 완료(2026-10-10), 하지만 계정 크레딧이 0 이라 402 → https://huggingface.co/settings/billing 에서 크레딧 충전 시 동작 (영상 1개당 이미지 7장 내외)
+   - Hugging Face: 토큰 권한은 추가 완료, 계정 크레딧 0 이라 402 → https://huggingface.co/settings/billing 에서 충전 시 동작
    - Pexels API Key → 2026-10-10 현재 신규 발급 중단
-   - Google AI Studio 에서 Gemini API 프로젝트에 결제 연결 (장당 약 $0.04)
+   - Google AI Studio 에서 Gemini API 프로젝트에 결제 연결 (장당 약 $0.04, 1순위로 사용됨)
 2. 앱 로고를 넣고 싶으면 브랜드 인증 심사 필요 (안 해도 동작에 문제 없음)
 3. macOS 의 `data/database.sqlite` 에 있는 주제(디아틀로프 고개 등)는 클라우드 DB 에 없음 → 필요하면 `pipeline-state` 브랜치 DB 에 병합
 4. 로컬에 남은 DB 쿠퍼 영상(job `20261008-173014`, rendered)은 업로드 안 됨. 올리려면 로컬에서 `upload` (클라우드 DB 에는 기록되지 않음, 그날 영상이 2개가 됨)
