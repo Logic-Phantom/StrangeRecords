@@ -305,10 +305,15 @@ class DailyPipeline:
         # AI 이미지는 Gemini Key 가 있을 때만 (offline 테스트는 Gemini / Hugging Face 를 호출하지 않음)
         use_ai = self.settings.assets.ai_image.enabled and bool(self.settings.secrets.gemini_api_key) and not self.options.offline
         providers = build_providers(self.settings, self.gemini if use_ai else None, ai_fallback=not self.options.offline)
-        manager = AssetManager(self.settings, providers, used_ids=used)
+        # AI 이미지 필수(offline 테스트 제외): 빠진 Scene 이 있으면 자체 그래픽 대신 단계를 실패시켜 나중에 이어서 그린다
+        require_ai = self.settings.assets.require_ai_image and not self.options.offline
+        manager = AssetManager(self.settings, providers, used_ids=used, require_ai=require_ai)
+        partial_file = self.paths.sources / f"{ctx.id}_assets_partial.json"
+        existing = [AssetInfo(**a) for a in (read_json(partial_file) or [])]
         assets = manager.collect(
             content.scenes, self.work_dir(ctx) / "assets", self._mood(ctx), self._timings(ctx),
-            context=f"{content.title} — {content.topic}",
+            context=f"{content.title} — {content.topic}", existing=existing,
+            on_progress=lambda done: write_json(partial_file, [a.model_dump() for a in done]),
         )
         ctx.state["assets"] = [a.model_dump() for a in assets]
         self.assets_repo.replace_for_job(ctx.id, assets)

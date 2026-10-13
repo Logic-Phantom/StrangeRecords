@@ -131,6 +131,11 @@ assets:
   min_short_side: 720
   max_download_mb: 80
   request_timeout: 30
+  # 모든 Scene 을 대본(자막) 내용대로 그린 AI 이미지로 채운다. 자체 그래픽(어두운 배경)·스톡 자료로 대체하지 않음.
+  # AI 이미지가 빠진 Scene 은 아래 시간(초)만큼 쉬었다가 다시 그리고, 그래도 빠지면 assets 단계를 실패시킨다
+  # → 클라우드는 5분/10분 뒤 실패 단계부터 재실행 (이미 그린 Scene 은 data/sources/<job>_assets_partial.json 에서 재사용)
+  require_ai_image: true
+  ai_retry_waits: [30, 90, 180]
   ai_image:
     # Scene 마다 대본의 visual_prompt 로 Gemini 가 장면 이미지를 생성한다.
     # 무료 티어에서 이미지 모델이 막혀 있으면 Google AI Studio 에서 결제(Billing) 연결 필요.
@@ -147,6 +152,8 @@ assets:
     # .env 의 CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN 필요 (무료 플랜 하루 10,000 Neurons, SDXL base 는 0원)
     enabled: true
     model: "@cf/stabilityai/stable-diffusion-xl-base-1.0"
+    # 위 모델이 타임아웃/5xx/거부되면 같은 Scene 에서 순서대로 전환 (Lightning: 수 초 만에 생성, FLUX: 1024x1024 → 9:16 로 잘라 씀)
+    fallback_models: ["@cf/bytedance/stable-diffusion-xl-lightning", "@cf/black-forest-labs/flux-1-schnell"]
     width: 768      # 9:16
     height: 1344
     num_steps: 20   # 최대 20

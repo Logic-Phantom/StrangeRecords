@@ -135,6 +135,7 @@ class HFImageConfig(BaseModel):
 class CFImageConfig(BaseModel):
     enabled: bool = False
     model: str = "@cf/stabilityai/stable-diffusion-xl-base-1.0"
+    fallback_models: list[str] = Field(default_factory=list)
     width: int = 768
     height: int = 1344
     num_steps: int = 20
@@ -152,6 +153,10 @@ class AssetsConfig(BaseModel):
     min_short_side: int = 720
     max_download_mb: int = 80
     request_timeout: int = 30
+    # true: 모든 Scene 에 대본 내용대로 그린 AI 이미지가 있어야 한다 (자체 그래픽/어두운 화면으로 채우지 않음).
+    #       AI 이미지가 빠진 Scene 은 ai_retry_waits 만큼 쉬었다가 다시 그리고, 그래도 없으면 단계를 실패시켜 나중에 재시도
+    require_ai_image: bool = False
+    ai_retry_waits: list[float] = Field(default_factory=lambda: [30, 90, 180])
     ai_image: AIImageConfig = Field(default_factory=AIImageConfig)
     hf_image: HFImageConfig = Field(default_factory=HFImageConfig)
     cf_image: CFImageConfig = Field(default_factory=CFImageConfig)

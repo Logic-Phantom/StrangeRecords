@@ -222,7 +222,7 @@ class FlakySession(FakeSession):
         self.responses = list(responses)
 
     def post(self, url, json=None, headers=None, timeout=None):
-        self.calls.append({"url": url})
+        self.calls.append({"url": url, "json": json})
         item = self.responses.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -233,8 +233,86 @@ def test_cloudflare_intermittent_timeouts_do_not_exclude_provider(settings, tmp_
     import requests
 
     monkeypatch.setattr("app.utils.retry.random.uniform", lambda a, b: 0)
+    settings.assets.cf_image.fallback_models = []  # 대체 모델 없이 provider 제외 기준만 확인
     ok, timeout = FakeResponse(content=_png((768, 1344))), requests.ReadTimeout("read timed out")
     # scene1: 타임아웃 2회(실패) → scene2 성공 → scene3: 타임아웃 2회(실패) → scene4 성공
     session = FlakySession([timeout, timeout, ok, timeout, timeout, ok])
     assets = _cf_manager(settings, session).collect(_scenes(4), tmp_path / "assets", "dark")
     assert [a.source for a in assets] == ["procedural", "cf_image", "procedural", "cf_image"]
+
+
+def test_cloudflare_slow_model_falls_back_to_next_model(settings, tmp_path, monkeypatch):
+    import requests
+
+    monkeypatch.setattr("app.utils.retry.random.uniform", lambda a, b: 0)
+    settings.assets.cf_image.fallback_models = [
+        "@cf/bytedance/stable-diffusion-xl-lightning", "@cf/black-forest-labs/flux-1-schnell",
+    ]
+    timeout = requests.ReadTimeout("read timed out")
+    flux = FakeResponse(content_type="application/json", payload={"result": {"image": __import__("base64").b64encode(_png((1024, 1024))).decode()}})
+    # SDXL 타임아웃 2회 → Lightning 400 거부 → FLUX 성공
+    session = FlakySession([timeout, timeout, FakeResponse(status_code=400), flux])
+    assets = _cf_manager(settings, session).collect(_scenes(1), tmp_path / "assets", "dark")
+    assert assets[0].source == "cf_image" and "flux-1-schnell" in assets[0].license
+    assert [c["url"].rsplit("/run/", 1)[1] for c in session.calls] == [
+        "@cf/stabilityai/stable-diffusion-xl-base-1.0", "@cf/stabilityai/stable-diffusion-xl-base-1.0",
+        "@cf/bytedance/stable-diffusion-xl-lightning", "@cf/black-forest-labs/flux-1-schnell",
+    ]
+    assert set(session.calls[-1]["json"]) == {"prompt", "steps"}  # FLUX 는 width/height 를 보내지 않음
+
+
+def _required_manager(settings, session, sleeps):
+    settings.assets.cf_image.fallback_models = []
+    settings.assets.ai_retry_waits = [30, 90]
+    manager = _cf_manager(settings, session)
+    manager.require_ai = True
+    manager.sleep = sleeps.append
+    return manager
+
+
+def test_required_ai_image_retries_missing_scene_instead_of_procedural(settings, tmp_path, monkeypatch):
+    import requests
+
+    monkeypatch.setattr("app.utils.retry.random.uniform", lambda a, b: 0)
+    ok, timeout = FakeResponse(content=_png((768, 1344))), requests.ReadTimeout("read timed out")
+    # scene1 실패 → scene2,3 성공 → 30초 후 재시도 라운드에서 scene1 성공
+    session = FlakySession([timeout, timeout, ok, ok, ok])
+    sleeps: list[float] = []
+    progress: list[list[int]] = []
+    manager = _required_manager(settings, session, sleeps)
+    assets = manager.collect(_scenes(3), tmp_path / "assets", "dark",
+                             on_progress=lambda done: progress.append([a.scene_number for a in done]))
+    assert [a.source for a in assets] == ["cf_image"] * 3 and [a.scene_number for a in assets] == [1, 2, 3]
+    assert sleeps == [30] and progress[-1] == [1, 2, 3]
+
+
+def test_required_ai_image_raises_instead_of_dark_screen_and_reuses_done(settings, tmp_path, monkeypatch):
+    import pytest
+    import requests
+
+    from app.assets.asset_manager import MissingAIImages
+
+    monkeypatch.setattr("app.utils.retry.random.uniform", lambda a, b: 0)
+    ok, timeout = FakeResponse(content=_png((768, 1344))), requests.ReadTimeout("read timed out")
+    session = FlakySession([ok] + [timeout] * 6)  # scene1 성공, scene2 는 1차 + 재시도 2라운드 모두 실패
+    sleeps: list[float] = []
+    saved: list = []
+    manager = _required_manager(settings, session, sleeps)
+    with pytest.raises(MissingAIImages, match=r"\[2\]"):
+        manager.collect(_scenes(2), tmp_path / "assets", "dark", on_progress=lambda done: saved.extend(done))
+    assert sleeps == [30, 90] and [a.scene_number for a in saved] == [1]
+
+    # 다음 실행: 저장된 scene1 은 다시 그리지 않고 scene2 만 그린다
+    session2 = FlakySession([ok])
+    manager2 = _required_manager(settings, session2, [])
+    assets = manager2.collect(_scenes(2), tmp_path / "assets", "dark", existing=saved)
+    assert [a.source for a in assets] == ["cf_image", "cf_image"] and len(session2.calls) == 1
+
+
+def test_required_ai_image_without_any_ai_provider_fails_fast(settings, tmp_path):
+    import pytest
+
+    settings.assets.providers = ["cf_image", "procedural"]
+    manager = AssetManager(settings, build_providers(settings), require_ai=True)
+    with pytest.raises(NonRetryableError, match="AI 이미지 provider"):
+        manager.collect(_scenes(1), tmp_path / "assets", "dark")

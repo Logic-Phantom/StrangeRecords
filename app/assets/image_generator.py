@@ -59,6 +59,7 @@ def build_image_prompt(request: AssetRequest, style: str = "") -> str:
 class GeminiImageProvider(AssetProvider):
     name = "ai_image"
     supports = ("image",)
+    generates_ai = True
 
     def __init__(self, client, models: str | list[str], enabled: bool, style: str = ""):
         self.client = client
@@ -90,6 +91,10 @@ class GeminiImageProvider(AssetProvider):
         )
 
 
+class ModelRejected(Exception):
+    """이 모델로는 요청할 수 없음 (모델 없음/파라미터 거부). 같은 provider 의 다음 모델로 넘어간다."""
+
+
 def _http_status(exc: BaseException) -> int | None:
     response = getattr(exc, "response", None)
     return getattr(response, "status_code", None)
@@ -105,6 +110,7 @@ class CloudflareImageProvider(AssetProvider):
 
     name = "cf_image"
     supports = ("image",)
+    generates_ai = True
     API = "https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
 
     def __init__(self, account_id: str, api_token: str, config: CFImageConfig, style: str = "", enabled: bool = True,
@@ -116,21 +122,31 @@ class CloudflareImageProvider(AssetProvider):
         self.enabled = enabled
         self.session = session or requests.Session()
         self._tried: set[int] = set()
+        self._bad_models: set[str] = set()
 
     @property
     def available(self) -> bool:
-        return bool(self.enabled and self.config.enabled and self.account_id and self.api_token and self.config.model)
+        return bool(self.enabled and self.config.enabled and self.account_id and self.api_token and self.models)
 
-    def generate_image(self, prompt: str) -> bytes:
-        """프롬프트로 이미지를 생성해 이미지 bytes 로 반환한다."""
+    @property
+    def models(self) -> list[str]:
+        return [m for m in dict.fromkeys([self.config.model, *self.config.fallback_models]) if m]
+
+    def _payload(self, model: str, prompt: str) -> dict:
         cfg = self.config
-        url = self.API.format(account_id=self.account_id, model=cfg.model)
-        payload = {
-            "prompt": prompt, "width": cfg.width, "height": cfg.height,
-            "num_steps": cfg.num_steps, "guidance": cfg.guidance,
-        }
+        if "flux" in model:
+            # FLUX.1 schnell: prompt/steps(최대 8)만 받음, 1024x1024 → 렌더 단계에서 9:16 으로 잘라 씀
+            return {"prompt": prompt[:2048], "steps": min(cfg.num_steps, 8)}
+        payload = {"prompt": prompt, "width": cfg.width, "height": cfg.height,
+                   "num_steps": cfg.num_steps, "guidance": cfg.guidance}
         if cfg.negative_prompt:
             payload["negative_prompt"] = cfg.negative_prompt
+        return payload
+
+    def _generate_with(self, model: str, prompt: str) -> bytes:
+        cfg = self.config
+        url = self.API.format(account_id=self.account_id, model=model)
+        payload = self._payload(model, prompt)
 
         def _call() -> bytes:
             resp = self.session.post(
@@ -144,7 +160,7 @@ class CloudflareImageProvider(AssetProvider):
             if resp.status_code == 429:
                 raise NonRetryableError(f"Cloudflare Workers AI 무료 한도 초과 (429): {resp.text[:200]}")
             if resp.status_code in (400, 404):
-                raise NonRetryableError(f"Cloudflare 모델 요청 거부 ({cfg.model}, {resp.status_code}): {resp.text[:200]}")
+                raise ModelRejected(f"Cloudflare 모델 요청 거부 ({model}, {resp.status_code}): {resp.text[:200]}")
             resp.raise_for_status()  # 5xx → 재시도
             if resp.headers.get("content-type", "").startswith("image/"):
                 return resp.content
@@ -154,14 +170,37 @@ class CloudflareImageProvider(AssetProvider):
                 raise RuntimeError(f"Cloudflare 이미지 응답 없음: {resp.text[:200]}")
             return base64.b64decode(image)
 
-        return retry_call(_call, step=f"Cloudflare Image ({cfg.model})", max_attempts=2, delays=((3, 6),))
+        return retry_call(_call, step=f"Cloudflare Image ({model})", max_attempts=2, delays=((3, 6),),
+                          retry_on=(requests.RequestException, RuntimeError, ValueError))
+
+    def generate_image(self, prompt: str) -> tuple[bytes, str]:
+        """models 순서대로 그려 (이미지 bytes, 사용한 모델) 을 반환한다.
+
+        인증 오류·하루 무료 한도(429)는 계정 전체 문제라 즉시 NonRetryableError,
+        타임아웃/5xx/모델 거부는 그 모델만의 문제일 수 있으므로 같은 Scene 에서 다음 모델로 넘어간다.
+        """
+        errors: list[str] = []
+        for model in self.models:
+            if model in self._bad_models:
+                continue
+            try:
+                return self._generate_with(model, prompt), model
+            except NonRetryableError:
+                raise
+            except ModelRejected as exc:
+                self._bad_models.add(model)  # 없는 모델/잘못된 요청은 다음 Scene 에서도 같다
+                errors.append(str(exc))
+            except Exception as exc:
+                errors.append(f"{model}: {type(exc).__name__}: {exc}")
+            logger.warning("Cloudflare %s 실패 → 다음 모델로 전환: %s", model, errors[-1][:200])
+        raise RuntimeError("Cloudflare 모든 모델 실패: " + " | ".join(errors))
 
     def fetch(self, request: AssetRequest, dest_dir: Path) -> AssetInfo | None:
         if request.scene_number in self._tried:
             return None
         self._tried.add(request.scene_number)
         prompt = build_image_prompt(request, self.style)
-        data = self.generate_image(prompt)
+        data, model = self.generate_image(prompt)
         with Image.open(io.BytesIO(data)) as img:
             w, h = img.size
             dest = dest_dir / f"scene_{request.scene_number:02d}_cf.png"
@@ -169,7 +208,7 @@ class CloudflareImageProvider(AssetProvider):
         return AssetInfo(
             scene_number=request.scene_number, media_type="image", local_path=str(dest), source="cf_image",
             source_id=hashlib.md5(prompt.encode()).hexdigest()[:12],
-            license=f"AI generated (Cloudflare Workers AI {self.config.model})",
+            license=f"AI generated (Cloudflare Workers AI {model})",
             downloaded_at=now_iso(), generated_by_ai=True, query=prompt, width=w, height=h,
         )
 
@@ -184,6 +223,7 @@ class HuggingFaceImageProvider(AssetProvider):
 
     name = "hf_image"
     supports = ("image",)
+    generates_ai = True
 
     def __init__(self, api_key: str, config: HFImageConfig, style: str = "", enabled: bool = True, client=None):
         self.api_key = api_key

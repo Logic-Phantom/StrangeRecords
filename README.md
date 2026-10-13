@@ -63,7 +63,12 @@ bash scripts/setup_macos.sh
 - 시각자료는 Scene 마다 대본 내용대로 그린 AI 이미지를 사용합니다. **2026-10-13 부터 Gemini 이미지(`assets.ai_image.enabled: false`)는 쓰지 않고 Cloudflare → Hugging Face 순으로 그립니다.** 아래는 Gemini 이미지를 다시 켤 때의 설명입니다 (`assets.ai_image`). 같은 `GEMINI_API_KEY` 를 쓰지만, 무료 티어에서 이미지 모델이 막혀 있으면 [Google AI Studio](https://aistudio.google.com/) 에서 **결제(Billing) 연결**이 필요합니다 (장당 약 $0.04, 영상 1개 6~9장).
 - Gemini 이미지가 실패(무료 티어 `limit: 0`, 429 RESOURCE_EXHAUSTED, 권한 오류)하면 **같은 Scene 에서 바로 Cloudflare Workers AI** (`assets.cf_image`, `@cf/stabilityai/stable-diffusion-xl-base-1.0`, 768x1344, 무료)로 같은 프롬프트를 그립니다. 인증 오류·무료 한도 초과(429)면 이번 작업에서 제외하고 다음 provider 로 넘어갑니다.
 - Cloudflare 도 실패하면 **Hugging Face Inference API** (`assets.hf_image`, 기본 `stabilityai/stable-diffusion-xl-base-1.0`, 768x1344)로 같은 프롬프트를 그립니다. `provider: "auto"` 라 그 모델을 서비스 중인 Inference Provider(현재 SDXL 은 fal-ai)로 자동 라우팅되며, 토큰 권한 없음(403)·크레딧 소진(402)이면 이번 작업에서 제외하고 Pexels 로 넘어갑니다.
-- AI 이미지가 모두 실패하면 Pexels/Pixabay → `assets/images`, `assets/videos` 의 로컬 자료 → 자체 제작 그래픽(Pillow, 어두운 배경)으로 대체되어 **제작은 멈추지 않습니다**. 영상이 어두운 배경만 나오면 로그에서 `ai_image 자료 수집 실패` 원인을 확인하세요.
+- **AI 이미지 필수 (`assets.require_ai_image: true`, 2026-10-13~)**: 모든 Scene 을 대본(자막) 내용대로 그린 AI 이미지로 채웁니다. 어두운 자체 그래픽·스톡 자료로 대체하지 않습니다.
+  - Cloudflare 안에서 모델 전환: SDXL base → SDXL-Lightning → FLUX.1 schnell (`cf_image.fallback_models`, 타임아웃·5xx·모델 거부 시 같은 Scene 에서 바로 다음 모델)
+  - 그래도 빠진 Scene 은 30초 / 90초 / 180초 쉬었다가 다시 그림 (`assets.ai_retry_waits`)
+  - 끝내 빠지면 업로드하지 않고 `assets` 단계 실패 → 클라우드가 5분/10분 뒤 그 단계부터 재실행. 이미 그린 Scene 은 `data/sources/<job>_assets_partial.json` 에서 재사용하고 빠진 Scene 만 그림
+  - AI 이미지 provider(Cloudflare/HF 키)가 하나도 없으면 바로 실패합니다. `test --offline` 은 예외(자체 그래픽 사용)
+  - `require_ai_image: false` 로 두면 예전처럼 Pexels/Pixabay → 로컬 → 자체 제작 그래픽으로 대체해 제작을 멈추지 않습니다.
 - Gemini 무료 모델/한도가 바뀌면 `python -m app.main models` 로 사용 가능한 모델을 확인하고 `config.yaml` 의 `gemini.model` (또는 `.env` 의 `GEMINI_MODEL`)만 바꾸면 됩니다.
 - 기본 모델이 과부하(503)/한도 초과(429)로 3회 실패하면 `gemini.fallback_models` 순서(`gemini-flash-latest` → `gemini-2.5-flash` → `gemini-flash-lite-latest`)로 자동 전환하고, 그 실행 동안은 전환된 모델을 유지합니다.
 - 하루 Gemini 호출 수: 주제 1 + 중복 판단 1 + 자료 정리 1 + 대본 1 + Scene 1 + 메타데이터 1 ≈ **6회** (+ 검증 실패 시 재요청).
@@ -398,6 +403,15 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 - 음성: 새 주소로 8개 Scene 합성 성공 (500 1회 → 재시도로 통과), 영어 자막 번역 8개 Scene, 메타데이터는 Gemini 503 과부하로 `gemini-2.5-flash` 로 자동 전환
 - 시각자료: Cloudflare 가 느려(장당 53~102초) 2개 Scene 이 120초 타임아웃 → 오류 횟수가 "연속"이 아니라 누적으로 세어져 Cloudflare 가 중간에 제외됨 → **8개 중 4개만 AI 이미지**, 나머지는 자체 그래픽
   - 수정: 성공하면 오류 횟수 초기화(연속 2회 실패일 때만 제외), Cloudflare `timeout` 120 → 180초. 자동 테스트 52개 통과
+
+**AI 이미지 누락(자체 그래픽 4장) 정확한 원인과 재발 방지**
+- 경과 (job `20261013-064242`, 로그 기준)
+  - Scene 1: Cloudflare SDXL 120초 타임아웃 2회(약 4분) → Hugging Face 402(크레딧 0) 로 HF 는 작업 내내 제외 → Pexels/Pixabay 키 없음 → **자체 그래픽**
+  - Scene 2~5: Cloudflare 성공 (장당 53~102초, 평소 11초보다 5~10배 느림)
+  - Scene 6: 다시 120초 타임아웃 2회 → 오류 횟수가 Scene 1 과 **누적**되어 2회 → Cloudflare 를 "이번 작업에서 제외"
+  - Scene 7·8: Cloudflare 가 이미 제외되어 **시도조차 하지 않고** 자체 그래픽
+- 근본 원인: ① Cloudflare SDXL 이 혼잡해 응답이 느렸는데 제한 120초 + 대체 모델 없음 ② "연속 오류" 제외 기준이 실제로는 누적이라 간헐적 타임아웃 2번으로 제외 ③ 대체할 AI 수단(HF)이 크레딧 0 ④ 최종 대체가 어두운 자체 그래픽이고, 품질 검사는 완전한 검은 화면만 걸러서 그대로 업로드됨
+- 재발 방지: 위 "AI 이미지 필수" 규칙 (Cloudflare 모델 전환 → 재시도 라운드 → 그래도 없으면 업로드 중단 후 재실행). 자동 테스트 56개 통과
 
 ### 남은 작업
 

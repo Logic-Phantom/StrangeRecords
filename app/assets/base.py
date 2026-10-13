@@ -24,10 +24,17 @@ class AssetRequest:
 class AssetProvider(ABC):
     name: str = "base"
     supports: tuple[str, ...] = ("video", "image")
+    generates_ai: bool = False   # 장면 내용대로 이미지를 새로 그리는 AI provider 인가
 
     @property
     def available(self) -> bool:
         return True
+
+    def forget(self, scene_number: int) -> None:
+        """이 Scene 을 다시 시도할 수 있게 한다 (AI provider 는 Scene 당 한 번만 시도하므로 재시도 라운드에서 사용)."""
+        tried = getattr(self, "_tried", None)
+        if isinstance(tried, set):
+            tried.discard(scene_number)
 
     @abstractmethod
     def fetch(self, request: AssetRequest, dest_dir: Path) -> AssetInfo | None:
