@@ -151,12 +151,14 @@ assets:
     # Gemini 이미지 실패 시 Cloudflare Workers AI 로 같은 프롬프트(+ ai_image.style)를 그린다.
     # .env 의 CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN 필요 (무료 플랜 하루 10,000 Neurons, SDXL base 는 0원)
     enabled: true
-    model: "@cf/stabilityai/stable-diffusion-xl-base-1.0"
-    # 위 모델이 타임아웃/5xx/거부되면 같은 Scene 에서 순서대로 전환 (Lightning: 수 초 만에 생성, FLUX: 1024x1024 → 9:16 로 잘라 씀)
-    fallback_models: ["@cf/bytedance/stable-diffusion-xl-lightning", "@cf/black-forest-labs/flux-1-schnell"]
-    width: 768      # 9:16
+    # 2026-10-13 실측(같은 프롬프트): FLUX.1 schnell 2.4초·장면 내용(예: "풍선 탱크")을 가장 정확히 그림, 단 1024x1024 고정 → 9:16 로 잘라 씀
+    #                                SDXL-Lightning 4초·768x1344 / SDXL base 104초(혼잡 시 타임아웃)
+    model: "@cf/black-forest-labs/flux-1-schnell"
+    # 위 모델이 타임아웃/5xx/거부되면 같은 Scene 에서 순서대로 전환
+    fallback_models: ["@cf/bytedance/stable-diffusion-xl-lightning", "@cf/stabilityai/stable-diffusion-xl-base-1.0"]
+    width: 768      # 9:16 (SDXL 계열만, FLUX 는 크기 지정 불가)
     height: 1344
-    num_steps: 20   # 최대 20
+    num_steps: 20   # SDXL 최대 20, FLUX 는 최대 8 로 자동 제한
     guidance: 7.5
     negative_prompt: "text, letters, caption, watermark, logo, signature, blurry, lowres, deformed, extra limbs"
     timeout: 180    # 혼잡 시 장당 50~100초 걸림 (2026-10-13 클라우드 실측, 120초에서 타임아웃 발생)

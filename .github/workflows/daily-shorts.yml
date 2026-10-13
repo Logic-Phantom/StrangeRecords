@@ -20,10 +20,18 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: "today = 제작 + 업로드 / test = 제작만 (업로드 안 함)"
+        description: "today = 제작 + 업로드 / test = 제작만 (업로드 안 함) / remake = 완료된 작업을 다시 제작 + 업로드"
         type: choice
-        options: [today, test]
+        options: [today, test, remake]
         default: today
+      job:
+        description: "remake 할 작업 ID (비우면 오늘 완료된 최근 작업)"
+        type: string
+        default: ""
+      from_step:
+        description: "remake 시작 단계 (voice = 음성부터, assets = 이미지부터)"
+        type: string
+        default: "voice"
 
 concurrency:
   group: daily-shorts
@@ -46,6 +54,8 @@ jobs:
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
       COMMAND: ${{ inputs.command || 'today' }}
+      REMAKE_JOB: ${{ inputs.job }}
+      REMAKE_FROM: ${{ inputs.from_step || 'voice' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -92,6 +102,17 @@ jobs:
           if [ "$COMMAND" = "test" ]; then
             python -m app.main test
             exit $?
+          fi
+          if [ "$COMMAND" = "remake" ]; then
+            python -m app.main remake $REMAKE_JOB --from-step "$REMAKE_FROM" && exit 0
+            JOB=$(python -c "from app.config.settings import get_settings; from app.database.db import Database; from app.database.repositories import JobRepository; j=JobRepository(Database(get_settings().paths.database)).latest(['failed']); print(j.id if j else '')")
+            # 실패하면 실패한 단계부터 이어서 재시도 (그린 이미지는 재사용)
+            for attempt in 2 3; do
+              echo "::warning::remake 실패 → $((attempt - 1))/2 재시도 대기"
+              sleep $(((attempt - 1) * 300))
+              python -m app.main retry $JOB && exit 0
+            done
+            exit 1
           fi
           # 실패하면 같은 서버에서 실패한 단계부터 이어서 재시도 (중간 파일이 남아 있음)
           for attempt in 1 2 3; do

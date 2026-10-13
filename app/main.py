@@ -5,6 +5,7 @@ python -m app.main test      영상까지 제작 (업로드 안 함)  [--offline
 python -m app.main topic     주제 후보 생성 + 중복 검사 미리보기 (DB 저장 안 함)
 python -m app.main history   제작 이력
 python -m app.main retry     실패 작업을 실패한 단계부터 재시도
+python -m app.main remake    완료된 작업을 지정 단계부터 다시 제작 + 업로드 (--from-step voice)
 python -m app.main upload    제작 완료(업로드 대기) 영상 업로드
 python -m app.main auth      YouTube OAuth 최초 인증
 python -m app.main setup     폴더/DB/기본 BGM·효과음 생성
@@ -131,6 +132,51 @@ def cmd_retry(settings: Settings, args: argparse.Namespace) -> int:
         print("재시도할 실패 작업이 없습니다.")
         return 0
     pipeline.resume(job.id)
+    return 0
+
+
+def cmd_remake(settings: Settings, args: argparse.Namespace) -> int:
+    """완료(업로드)된 작업을 지정 단계부터 다시 만들어 업로드한다 (예: 영상을 삭제하고 이미지/자막을 고쳐 다시 올릴 때).
+
+    주제/대본/Scene 등 from_step 이전 단계 결과는 그대로 쓰고, 이전 YouTube 업로드 기록은 지운다.
+    """
+    from app.database.models import JobStatus
+    from app.pipeline.daily_pipeline import STEPS, today_start_iso
+    from app.utils.logger import get_logger
+
+    log = get_logger("cli")
+    pipeline = _pipeline(settings)
+    if args.job_id:
+        job = pipeline.jobs.get(args.job_id)
+    else:
+        job = pipeline.jobs.latest([JobStatus.SUCCESS, JobStatus.RENDERED])
+        if job and job.created_at < today_start_iso(settings):
+            job = None
+    if not job:
+        print("다시 만들 작업이 없습니다 (job_id 를 지정하세요).")
+        return 1
+    if args.from_step not in STEPS:
+        print(f"단계 이름 오류: {args.from_step} (가능: {', '.join(STEPS)})")
+        return 2
+    keep = STEPS[: STEPS.index(args.from_step)]
+    completed = [s for s in job.completed_steps if s in keep]
+    missing = [s for s in keep if s not in completed]
+    if missing:
+        print(f"{args.from_step} 이전 단계가 완료되지 않았습니다: {missing}")
+        return 2
+    state = dict(job.state)
+    state.pop("upload", None)
+    if STEPS.index(args.from_step) <= STEPS.index("assets"):
+        # 이전 실행에서 그린 이미지 대신 새로 그린다
+        (settings.paths.sources / f"{job.id}_assets_partial.json").unlink(missing_ok=True)
+    pipeline.jobs.save_state(job.id, completed, state, None)
+    pipeline.jobs.update(job.id, status=JobStatus.FAILED, youtube_video_id=None, youtube_url=None,
+                         uploaded_at=None, publish_at=None, retry_count=0,
+                         error=f"remake from {args.from_step} (이전 영상: {job.youtube_url or '-'})")
+    log.info("작업 %s 을(를) %s 단계부터 다시 제작 (이전 영상 %s)", job.id, args.from_step, job.youtube_url or "-")
+    ctx = pipeline.resume(job.id, upload=settings.is_production)
+    up = ctx.state.get("upload") or {}
+    print(f"\n✅ 다시 제작 완료: {up.get('url') or ctx.state.get('render', {}).get('video_path')}")
     return 0
 
 
@@ -284,6 +330,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("retry", help="실패 작업 재시도")
     p.add_argument("job_id", nargs="?")
     p.set_defaults(func=cmd_retry)
+
+    p = sub.add_parser("remake", help="완료된 작업을 지정 단계부터 다시 제작 + 업로드")
+    p.add_argument("job_id", nargs="?", help="작업 ID (없으면 오늘 완료된 최근 작업)")
+    p.add_argument("--from-step", default="voice", help="다시 시작할 단계 (기본 voice: 음성부터 다시)")
+    p.set_defaults(func=cmd_remake)
 
     p = sub.add_parser("upload", help="제작 완료 영상 업로드")
     p.add_argument("job_id", nargs="?")

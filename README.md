@@ -82,6 +82,7 @@ python -m app.main test --offline   # Gemini 없이 샘플 대본(tests/fixtures
 python -m app.main topic        # 주제 후보 + 중복 검사 결과 미리보기 (저장 안 함)
 python -m app.main history      # 제작 이력
 python -m app.main retry [JOB]  # 실패 작업을 실패한 단계부터 재시도
+python -m app.main remake [JOB] --from-step voice   # 완료된 작업을 그 단계부터 다시 제작 + 업로드 (영상 삭제 후 다시 올릴 때)
 python -m app.main upload [JOB] # 제작 완료(rendered) 영상 업로드
 python -m app.main upload --privacy private   # 이번 업로드만 비공개로 (scheduled | public 도 가능)
 python -m app.main auth         # YouTube 최초 OAuth 인증 (token.json 저장)
@@ -147,7 +148,7 @@ youtube:
    | `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` | Cloudflare Workers AI (권장, 무료 AI 이미지) |
    | `HF_API_KEY` | Hugging Face 토큰 (선택, 크레딧 필요) |
    | `PEXELS_API_KEY` / `PIXABAY_API_KEY` | 선택 |
-2. **Actions → Daily Shorts → Run workflow** 로 수동 실행해 확인 (`test` = 제작만, `today` = 제작 + 업로드)
+2. **Actions → Daily Shorts → Run workflow** 로 수동 실행해 확인 (`test` = 제작만, `today` = 제작 + 업로드, `remake` = 완료된 작업(`job`, 비우면 오늘 것)을 `from_step` 단계부터 다시 제작 + 업로드)
 - 주제 이력/하루 1개 정책 DB(`data/database.sqlite`)는 실행마다 `pipeline-state` 브랜치에 저장되어 다음 실행이 이어 씁니다.
 - 실패하면 같은 서버에서 5분/10분 뒤 실패한 단계부터 최대 3회 실행합니다. 완성 영상은 Actions 실행 화면의 Artifacts 에 3일 보관됩니다.
 - YouTube 토큰을 다시 받아야 할 때(권한 철회, 비밀번호 변경 등): 로컬에서 `token.json` 삭제 → `auth` → 새 `token.json` 내용으로 `YOUTUBE_TOKEN_JSON` 갱신
@@ -412,6 +413,9 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
   - Scene 7·8: Cloudflare 가 이미 제외되어 **시도조차 하지 않고** 자체 그래픽
 - 근본 원인: ① Cloudflare SDXL 이 혼잡해 응답이 느렸는데 제한 120초 + 대체 모델 없음 ② "연속 오류" 제외 기준이 실제로는 누적이라 간헐적 타임아웃 2번으로 제외 ③ 대체할 AI 수단(HF)이 크레딧 0 ④ 최종 대체가 어두운 자체 그래픽이고, 품질 검사는 완전한 검은 화면만 걸러서 그대로 업로드됨
 - 재발 방지: 위 "AI 이미지 필수" 규칙 (Cloudflare 모델 전환 → 재시도 라운드 → 그래도 없으면 업로드 중단 후 재실행). 자동 테스트 56개 통과
+- Cloudflare 3개 모델 실제 비교 (같은 프롬프트 "풍선 고무 탱크"): FLUX.1 schnell 2.4초·풍선 탱크를 정확히 그림(1024x1024, 크기 지정 불가) / SDXL-Lightning 4.0초·768x1344·일반 탱크 / SDXL base 103.8초·일반 탱크
+  → **1순위 FLUX** (자막 내용에 가장 맞음) → Lightning → SDXL base
+- 오늘 영상(8KUWyvwXjqI)은 삭제 후 `remake` 명령(워크플로 `command: remake`)으로 음성 단계부터 다시 제작·업로드
 
 ### 남은 작업
 

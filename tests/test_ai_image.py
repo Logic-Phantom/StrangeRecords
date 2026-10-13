@@ -168,6 +168,7 @@ def _cf_manager(settings, session: FakeSession, hf_client: FakeHFClient | None =
     settings.assets.ai_image.enabled = True
     settings.assets.providers = ["ai_image", "cf_image", "hf_image", "procedural"]
     settings.secrets.cloudflare_account_id, settings.secrets.cloudflare_api_token = "acc123", "cf_test"
+    settings.assets.cf_image.model = "@cf/stabilityai/stable-diffusion-xl-base-1.0"
     settings.secrets.hf_api_key = "hf_test" if hf_client else ""
     providers = build_providers(settings, FakeClient(fail=NonRetryableError("429 limit: 0")))
     next(p for p in providers if isinstance(p, CloudflareImageProvider)).session = session
