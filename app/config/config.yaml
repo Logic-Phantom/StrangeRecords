@@ -112,14 +112,19 @@ voice:
   lead_in: 0.2                 # 첫 음성 전 무음(초)
   scene_gap: 0.2               # Scene 사이 무음(초)
   max_rate_boost: 20           # 길이 초과 시 최대 추가 속도(%)
+  # 접속 주소 (앞에서부터 시도, 403 이면 다음 주소). 2026-10 부터 bing 주소는 403 으로 막힘 (edge-tts#490)
+  endpoints: ["msedgeservices", "bing"]
+  min_interval: 2.5            # 새 주소는 연속 요청에 429 → 요청 사이 최소 간격(초, 실측 2초 이상이면 통과)
+  rate_limit_waits: [5, 10, 20, 30, 45]   # 429 를 받으면 차례로 기다렸다가 다시 요청
 
 # ---------------------------------------------------------------------
 # 시각자료
 # ---------------------------------------------------------------------
 assets:
-  # 우선순위: ai_image(Gemini AI 장면 이미지) → cf_image(Cloudflare Workers AI SDXL, 무료)
+  # 우선순위: ai_image(Gemini AI 장면 이미지, 현재 비활성) → cf_image(Cloudflare Workers AI SDXL, 무료)
   #          → hf_image(Hugging Face SDXL, 크레딧 필요) → pexels → pixabay → local(assets/images, assets/videos) → procedural
   # 앞 provider 가 실패(한도 초과/결제 미연결 등)하면 같은 Scene 에서 바로 다음 provider 로 넘어간다.
+  # enabled: false 인 provider 는 건너뛴다.
   providers: ["ai_image", "cf_image", "hf_image", "pexels", "pixabay", "local", "procedural"]
   prefer_video: true
   per_page: 15
@@ -129,7 +134,9 @@ assets:
   ai_image:
     # Scene 마다 대본의 visual_prompt 로 Gemini 가 장면 이미지를 생성한다.
     # 무료 티어에서 이미지 모델이 막혀 있으면 Google AI Studio 에서 결제(Billing) 연결 필요.
-    enabled: true
+    # 2026-10-13: 무료 티어는 이미지 한도 0 (매번 429) → 사용하지 않고 Cloudflare / Hugging Face 로 그린다.
+    #             결제를 연결한 뒤 다시 쓰려면 true 로 바꾼다.
+    enabled: false
     model: "gemini-3.1-flash-image"
     # 모델이 없거나(404) 한도 초과면 순서대로 전환 (python -m app.main models 로 이름 확인)
     fallback_models: ["gemini-2.5-flash-image"]
@@ -170,18 +177,26 @@ subtitle:
   compute_type: "int8"
   # script: 대본 텍스트 + Whisper 타이밍 (오탈자 없음) / whisper: 인식 결과 그대로
   text_source: "script"
-  max_chars: 11                # 자막 한 덩어리 최대 글자 수
-  max_words: 3
+  max_chars: 13                # 자막 한 덩어리 최대 글자 수 (구절 안에서는 길이를 고르게 나눠 한 어절만 남지 않게 함)
+  max_words: 4
   font_path: ""                # 비우면 OS 한글 폰트 자동 탐색 (assets/fonts 우선)
-  font_size: 92
-  position_y: 0.70             # 화면 높이 대비 자막 중심 위치 (하단 중앙)
+  font_size: 72                # 영어 자막이 함께 들어가므로 92 → 72
+  position_y: 0.62             # 화면 높이 대비 한국어 자막 중심 위치 (아래에 영어 자막이 들어갈 자리를 남김)
   color: "#FFFFFF"
   highlight_color: "#FFD43B"
   stroke_color: "#000000"
-  stroke_width: 8
+  stroke_width: 6
   show_title: true             # 상단에 영상 제목 고정 표시
   title_font_size: 64
   title_position_y: 0.13
+  # 해외 시청자용 영어 자막: Scene 나레이션 번역문을 한국어 자막 아래에 작게 표시 (SRT 에도 두 줄로 기록)
+  english: true
+  en_font_size: 38
+  en_min_font_size: 30         # 길면 en_max_lines 줄 안에 들어갈 때까지 글자를 줄인다
+  en_max_lines: 3
+  en_position_y: 0.69          # 영어 자막 블록의 위쪽 끝 (Shorts 하단 UI 에 가리지 않는 위치)
+  en_color: "#E6E6E6"
+  en_stroke_width: 4
 
 # ---------------------------------------------------------------------
 # 영상 (FFmpeg)
@@ -196,7 +211,7 @@ video:
   audio_sample_rate: 48000
   transition: "fade"           # fade(xfade) | cut
   transition_type: "fade"      # xfade 효과 이름 (fade, fadeblack, slideleft, ...)
-  transition_duration: 0.3
+  transition_duration: 0.5    # 장면 사이 크로스페이드(초)
   zoom_amount: 0.12            # Ken Burns 확대 비율
   outro_padding: 0.8           # 마지막 음성 후 여유(초)
   global_fade: 0.4

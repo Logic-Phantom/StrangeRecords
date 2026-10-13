@@ -1,11 +1,13 @@
-"""Gemini 로 대본을 Scene 으로 분할하고 Scene 별 시각자료 검색어를 생성한다."""
+"""Gemini 로 대본을 Scene 으로 분할하고 Scene 별 시각자료 검색어 + 영어 자막을 생성한다."""
 
 from __future__ import annotations
 
-from app.ai.gemini_client import GeminiClient, load_prompt
+import re
+
+from app.ai.gemini_client import ContentValidationError, GeminiClient, load_prompt
 from app.ai.validator import validate_scenes
 from app.config.settings import Settings
-from app.schemas import Scene, SceneList, ScriptDraft, TopicCandidate
+from app.schemas import Scene, SceneList, SceneTranslations, ScriptDraft, TopicCandidate
 from app.utils.logger import get_logger
 
 logger = get_logger("scene")
@@ -36,6 +38,35 @@ class SceneGenerator:
         scenes = renumber(result.scenes)
         logger.info("Scene 구성 완료: %d개", len(scenes))
         return scenes
+
+
+def missing_english(scenes: list[Scene]) -> bool:
+    return any(not s.narration_en.strip() for s in scenes)
+
+
+def translate_scenes(client: GeminiClient, scenes: list[Scene], topic: str) -> list[Scene]:
+    """narration_en 이 비어 있는 Scene 을 영어로 번역해 채운다 (Scene 단계에서 빠졌거나 이전 버전에서 만든 작업)."""
+    numbers = {s.scene_number for s in scenes}
+    prompt = load_prompt(
+        "translate_prompt",
+        topic=topic,
+        scenes="\n".join(f"{s.scene_number}. {s.narration}" for s in scenes),
+    )
+
+    def _validate(result: SceneTranslations) -> None:
+        got = {t.scene_number: t.narration_en.strip() for t in result.translations}
+        problems = [f"scene {n} 번역이 없다." for n in sorted(numbers) if not got.get(n)]
+        problems += [f"scene {n} 번역에 한글이 있다." for n, text in got.items() if re.search(r"[가-힣]", text)]
+        if problems:
+            raise ContentValidationError("\n".join(f"- {p}" for p in problems))
+
+    result = client.generate_json(prompt, SceneTranslations, validate=_validate, temperature=0.3)
+    english = {t.scene_number: t.narration_en.strip() for t in result.translations}
+    for scene in scenes:
+        if not scene.narration_en.strip():
+            scene.narration_en = english.get(scene.scene_number, "")
+    logger.info("영어 자막 번역 완료: %d개 Scene", len(scenes))
+    return scenes
 
 
 def renumber(scenes: list[Scene]) -> list[Scene]:

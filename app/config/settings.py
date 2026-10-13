@@ -107,6 +107,10 @@ class VoiceConfig(BaseModel):
     lead_in: float = 0.2
     scene_gap: float = 0.2
     max_rate_boost: int = 20
+    # Edge TTS 접속 주소 (앞에서부터 시도, 403 이면 다음). 이름(msedgeservices | bing) 또는 wss:// URL
+    endpoints: list[str] = Field(default_factory=lambda: ["msedgeservices", "bing"])
+    min_interval: float = 2.5        # 요청 사이 최소 간격(초)
+    rate_limit_waits: list[float] = Field(default_factory=lambda: [5, 10, 20, 30, 45])  # 429 시 대기(초)
 
 
 class AIImageConfig(BaseModel):
@@ -171,6 +175,14 @@ class SubtitleConfig(BaseModel):
     show_title: bool = True
     title_font_size: int = 64
     title_position_y: float = 0.13
+    # 영어 자막 (Scene 번역문을 한국어 자막 아래 작게 표시)
+    english: bool = True
+    en_font_size: int = 38
+    en_min_font_size: int = 30
+    en_max_lines: int = 3
+    en_position_y: float = 0.69      # 영어 자막 블록의 위쪽 끝 (화면 높이 비율)
+    en_color: str = "#E6E6E6"
+    en_stroke_width: int = 4
 
 
 class VideoConfig(BaseModel):

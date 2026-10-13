@@ -3,8 +3,8 @@
 매일 **새로운 주제 선정 → 자료 조사 → 대본 → 음성 → 시각자료 → 자막 → 편집 → 품질 검사 → YouTube 업로드(즉시 공개) → 이력 저장** 을 자동으로 수행하는 Python 프로젝트입니다. (GitHub Actions 로 매일 22:07 KST 실행 — PC 를 켜 두지 않아도 됨)
 
 - AI 엔진: **Google Gemini API 하나만 사용** (기본 `gemini-3.5-flash`, 과부하 시 자동 대체 모델 전환, 모델명은 `config.yaml` 한 곳에서 관리)
-- 음성: Edge TTS (무료) · 시각자료: **대본 기반 Gemini AI 장면 이미지** → **Cloudflare Workers AI / Hugging Face SDXL (대체 AI 이미지)** → Pexels / Pixabay (무료 API) · 자막: faster-whisper (로컬) · 편집: FFmpeg · DB: SQLite
-- 출력: **1080x1920 · 9:16 · 30fps · H.264 · AAC · MP4**, 한국어 40~60초
+- 음성: Edge TTS (무료) · 시각자료: **대본 기반 AI 장면 이미지: Cloudflare Workers AI / Hugging Face SDXL** (Gemini 이미지는 무료 티어 한도 0 이라 비활성) → Pexels / Pixabay (무료 API) · 자막: faster-whisper (로컬) · 편집: FFmpeg · DB: SQLite
+- 출력: **1080x1920 · 9:16 · 30fps · H.264 · AAC · MP4**, 한국어 40~60초, **한국어 + 영어 자막 / 한국어 + 영어 설명란** (해외 시청자용)
 
 ---
 
@@ -60,7 +60,7 @@ bash scripts/setup_macos.sh
 | Edge TTS | - | 무료, Key 불필요 | - |
 | Wikipedia | - | 무료, Key 불필요 | - |
 
-- 시각자료는 **Gemini 이미지 모델이 Scene 마다 대본 내용대로 그린 이미지**를 먼저 사용합니다 (`assets.ai_image`). 같은 `GEMINI_API_KEY` 를 쓰지만, 무료 티어에서 이미지 모델이 막혀 있으면 [Google AI Studio](https://aistudio.google.com/) 에서 **결제(Billing) 연결**이 필요합니다 (장당 약 $0.04, 영상 1개 6~9장).
+- 시각자료는 Scene 마다 대본 내용대로 그린 AI 이미지를 사용합니다. **2026-10-13 부터 Gemini 이미지(`assets.ai_image.enabled: false`)는 쓰지 않고 Cloudflare → Hugging Face 순으로 그립니다.** 아래는 Gemini 이미지를 다시 켤 때의 설명입니다 (`assets.ai_image`). 같은 `GEMINI_API_KEY` 를 쓰지만, 무료 티어에서 이미지 모델이 막혀 있으면 [Google AI Studio](https://aistudio.google.com/) 에서 **결제(Billing) 연결**이 필요합니다 (장당 약 $0.04, 영상 1개 6~9장).
 - Gemini 이미지가 실패(무료 티어 `limit: 0`, 429 RESOURCE_EXHAUSTED, 권한 오류)하면 **같은 Scene 에서 바로 Cloudflare Workers AI** (`assets.cf_image`, `@cf/stabilityai/stable-diffusion-xl-base-1.0`, 768x1344, 무료)로 같은 프롬프트를 그립니다. 인증 오류·무료 한도 초과(429)면 이번 작업에서 제외하고 다음 provider 로 넘어갑니다.
 - Cloudflare 도 실패하면 **Hugging Face Inference API** (`assets.hf_image`, 기본 `stabilityai/stable-diffusion-xl-base-1.0`, 768x1344)로 같은 프롬프트를 그립니다. `provider: "auto"` 라 그 모델을 서비스 중인 Inference Provider(현재 SDXL 은 fal-ai)로 자동 라우팅되며, 토큰 권한 없음(403)·크레딧 소진(402)이면 이번 작업에서 제외하고 Pexels 로 넘어갑니다.
 - AI 이미지가 모두 실패하면 Pexels/Pixabay → `assets/images`, `assets/videos` 의 로컬 자료 → 자체 제작 그래픽(Pillow, 어두운 배경)으로 대체되어 **제작은 멈추지 않습니다**. 영상이 어두운 배경만 나오면 로그에서 `ai_image 자료 수집 실패` 원인을 확인하세요.
@@ -376,6 +376,22 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 **Whisper 자막 타이밍 오류 수정**
 - `TypeError: open() got an unexpected keyword argument 'metadata_errors'` → PyAV 17+ 에서 `av.open(metadata_errors=)` 가 없어져 faster-whisper 1.2.1(최신)의 오디오 디코딩이 실패, 자막이 음성 길이 비율 배분으로 대체되고 있었음 (클라우드도 최신 PyAV 설치라 같은 문제)
 - `requirements.txt` 에 `av>=11,<17` 고정 → PyAV 16.1.0 에서 Whisper 단어 76개 타이밍 정상 인식 확인
+
+### 2026-10-13 — Edge TTS 403 장애 수정 / 영어 자막·설명 / 자막 개선
+
+**10/13 영상 미등록 원인**
+- Actions run `38312255411` (예약 13:07 UTC → GitHub 지연으로 10/13 06:42 KST 실행)이 `voice` 단계에서 3회 모두 실패 (job `20261013-064242`, 주제 "풍선 탱크로 나치를 속인 유령 부대")
+- 오류: `WSServerHandshakeError: 403` — Microsoft 가 2026-10 부터 edge-tts 가 쓰는 합성 주소 `speech.platform.bing.com` 을 막음 ([rany2/edge-tts#490](https://github.com/rany2/edge-tts/issues/490)). 최신 edge-tts 7.2.8 도 동일, 로컬 macOS 에서도 재현
+- 이미지(Gemini) 문제는 아니었음: 10/11·10/12 영상은 Cloudflare 이미지로 정상 제작
+
+**수정**
+- Edge TTS: Edge 155 가 쓰는 `wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1` (같은 토큰을 `Ocp-Apim-Subscription-Key` 로 전달)를 먼저 쓰고, 403 이면 기존 주소로 전환 (`voice.endpoints`)
+- 새 주소는 연속 요청에 `429` → 요청 간격 2.5초(`voice.min_interval`), 429 시 5/10/20/30/45초 대기 후 재요청(`voice.rate_limit_waits`). 실측: 2초 이상 간격이면 통과
+- Gemini 이미지 비활성 (`assets.ai_image.enabled: false`, 무료 티어 한도 0) → Cloudflare → Hugging Face → … 순
+- 영어 자막: Scene 생성 시 `narration_en`(영어 번역)도 함께 생성, 없으면(이전 작업 재개 등) 자막 단계에서 Gemini 로 번역. 한국어 자막 아래에 작게 표시, SRT 에도 두 줄로 기록 (`subtitle.english`)
+- 영어 설명: 메타데이터에 `title_en` / `description_en` 추가 → 설명란에 한국어 요약 다음 `🌏 English` 블록, 출처 제목·AI 고지도 영어 병기, 영어 해시태그 1~2개
+- 자막 크기 축소 (한국어 92 → 72px, 영어 38px), 자막 덩어리를 문장/쉼표 단위 안에서 길이가 고르게 나뉘도록 변경(끝에 한 어절만 남는 깜빡임 방지, "한 / 명도" 처럼 수사 뒤에서 끊지 않음), 같은 Scene 안에서는 자막 사이 빈 화면 없이 이어짐, 장면 전환 크로스페이드 0.3 → 0.5초
+- 자동 테스트 51개 통과, `test --offline` 로 실제 TTS(새 주소)·Whisper·렌더링 확인
 
 ### 남은 작업
 

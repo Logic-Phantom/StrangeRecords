@@ -122,6 +122,27 @@ class SubtitleRenderer:
                 draw.text((x, y), word, font=font, fill=fill, stroke_width=stroke, stroke_fill=stroke_color)
                 x += font.getlength(word) + space
 
+    def _draw_english(self, draw: ImageDraw.ImageDraw, text: str) -> None:
+        """영어 자막: 위쪽 끝을 en_position_y 에 고정하고, en_max_lines 줄을 넘으면 글자 크기를 줄인다."""
+        w, h = self.size
+        max_width = int(w * 0.9)
+        size = self.cfg.en_font_size
+        font = _font(self.font_path, size)
+        lines = self._wrap(text.split(), font, max_width)
+        while len(lines) > self.cfg.en_max_lines and size > self.cfg.en_min_font_size:
+            size -= 2
+            font = _font(self.font_path, size)
+            lines = self._wrap(text.split(), font, max_width)
+        ascent, descent = font.getmetrics()
+        line_h = int((ascent + descent) * 1.1)
+        top = int(h * self.cfg.en_position_y)
+        color, stroke_color = _hex(self.cfg.en_color), _hex(self.cfg.stroke_color)
+        for i, line_words in enumerate(lines):
+            line_text = " ".join(line_words)
+            x = (w - font.getlength(line_text)) / 2
+            draw.text((x, top + i * line_h), line_text, font=font, fill=color,
+                      stroke_width=self.cfg.en_stroke_width, stroke_fill=stroke_color)
+
     def _base_frame(self, title: str | None) -> Image.Image:
         img = Image.new("RGBA", self.size, (0, 0, 0, 0))
         if title and self.cfg.show_title:
@@ -134,6 +155,8 @@ class SubtitleRenderer:
         img = self._base_frame(title)
         draw = ImageDraw.Draw(img)
         self._draw_block(draw, chunk.text, int(self.size[1] * self.cfg.position_y), self.cfg.font_size, chunk.highlights)
+        if chunk.text_en and self.cfg.english:
+            self._draw_english(draw, chunk.text_en)
         img.save(path, optimize=True)
         return path
 

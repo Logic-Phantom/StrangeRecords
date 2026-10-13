@@ -47,6 +47,20 @@ def test_srt_format():
     assert srt.startswith("1\n00:00:00,000 --> 00:00:0")
 
 
+def test_english_subtitle_follows_scene():
+    scenes = [
+        Scene(scene_number=1, narration="첫 장면의 긴 문장입니다.", narration_en="This is the first scene.", visual_search_query="q"),
+        Scene(scene_number=2, narration="두 번째 장면입니다.", visual_search_query="q"),
+    ]
+    chunks = build_subtitles(scenes, [_timing(1, 0.0, 3.0), _timing(2, 3.0, 6.0)], [], max_chars=6, max_words=2)
+    assert all(c.text_en == "This is the first scene." for c in chunks if c.scene_number == 1)
+    assert all(c.text_en == "" for c in chunks if c.scene_number == 2)
+    srt = to_srt(chunks)
+    assert "\nThis is the first scene.\n" in srt
+    off = build_subtitles(scenes, [_timing(1, 0.0, 3.0), _timing(2, 3.0, 6.0)], [], max_chars=6, english=False)
+    assert all(c.text_en == "" for c in off)
+
+
 def test_highlight_single_char_exact_only():
     assert not is_highlight("한가운데서", {"한"})
     assert is_highlight("한", {"한"})

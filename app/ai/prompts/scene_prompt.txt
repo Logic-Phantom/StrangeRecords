@@ -23,6 +23,7 @@
 9. sfx: heartbeat | impact | whoosh | suspense | click | transition 중 하나 또는 null. 전체 영상에서 최대 {{max_sfx}}개만, 꼭 필요한 장면(반전, 긴장)에만 넣는다.
 10. emphasis_words: 자막에서 강조할 핵심 단어 0~2개 (narration 에 실제로 있는 단어 그대로).
 11. subtitle 은 narration 과 같게 둔다.
+12. narration_en: 해외 시청자를 위한 영어 자막. 그 장면 narration 을 자연스러운 영어로 번역한다 (의역 가능, 내용 추가/생략 금지, 30단어 이내, 고유명사는 영어 표기).
 
 [출력 형식] 아래 JSON 만 출력한다.
 {
@@ -32,6 +33,7 @@
       "start": 0,
       "end": 4,
       "narration": "",
+      "narration_en": "",
       "subtitle": "",
       "visual": "",
       "visual_type": "video",

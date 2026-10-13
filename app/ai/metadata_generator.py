@@ -19,6 +19,14 @@ TRUTH_LABELS = {
     "FICTION": "창작된 이야기입니다.",
 }
 
+TRUTH_LABELS_EN = {
+    "FACT": "Based on documented facts.",
+    "UNCONFIRMED": "Contains unconfirmed information.",
+    "LEGEND": "This is a legend that has been passed down.",
+    "URBAN_LEGEND": "This is an urban legend and has not been confirmed as fact.",
+    "FICTION": "This is a fictional story.",
+}
+
 SOURCE_LABELS = {
     "pexels": "Pexels",
     "pixabay": "Pixabay",
@@ -51,11 +59,11 @@ def build_hashtags(raw: list[str], limit: int = 8) -> list[str]:
 def build_credits(research: ResearchNotes | None, assets: list[AssetInfo], bgm: AudioTrackInfo | None) -> str:
     lines: list[str] = []
     if research and research.sources:
-        lines.append("📚 자료 출처")
+        lines.append("📚 자료 출처 (Sources)")
         for src in research.sources:
             lines.append(f"- {src.title}" + (f" ({src.url})" if src.url else ""))
     if assets:
-        lines.append("🎞 영상/이미지 출처")
+        lines.append("🎞 영상/이미지 출처 (Visuals)")
         seen: set[str] = set()
         for a in sorted(assets, key=lambda x: x.scene_number):
             label = SOURCE_LABELS.get(a.source, a.source)
@@ -66,19 +74,36 @@ def build_credits(research: ResearchNotes | None, assets: list[AssetInfo], bgm: 
                 seen.add(line)
                 lines.append(line)
     if bgm:
-        lines.append("🎵 음악")
+        lines.append("🎵 음악 (Music)")
         lines.append(f"- {bgm.title or bgm.file}" + (f" / {bgm.artist}" if bgm.artist else "") + (f" ({bgm.license})" if bgm.license else ""))
     if any(a.generated_by_ai for a in assets):
-        lines.append("※ 일부 이미지는 AI 로 생성되었습니다.")
-    lines.append("※ 이 영상의 대본과 음성은 AI(Gemini, Edge TTS)를 활용해 제작되었습니다.")
+        lines.append("※ 일부 이미지는 AI 로 생성되었습니다. (Some images are AI-generated.)")
+    lines.append("※ 이 영상의 대본과 음성은 AI(Gemini, Edge TTS)를 활용해 제작되었습니다."
+                 " (Script and voice were produced with AI: Gemini, Edge TTS.)")
     return "\n".join(lines)
 
 
-def compose_description(body: str, truth_status: str, truth_notice: str, credits: str, hashtags: list[str]) -> str:
+def build_english_section(title_en: str, description_en: str, truth_status: str) -> str:
+    """해외 시청자용 영어 제목/설명 블록. 영어 설명이 없으면 빈 문자열."""
+    if not description_en.strip():
+        return ""
+    lines = ["🌏 English"]
+    if title_en.strip():
+        lines.append(title_en.strip())
+    lines.append(description_en.strip())
+    if truth_status != "FACT":
+        lines.append(f"ℹ️ {TRUTH_LABELS_EN.get(truth_status, '')}".rstrip())
+    return "\n".join(lines)
+
+
+def compose_description(
+    body: str, truth_status: str, truth_notice: str, credits: str, hashtags: list[str], english: str = ""
+) -> str:
     parts = [body.strip()]
     notice = truth_notice.strip() or (TRUTH_LABELS.get(truth_status, "") if truth_status != "FACT" else "")
     if notice:
         parts.append(f"ℹ️ {notice}")
+    parts.append(english)
     parts.append(credits)
     parts.append(" ".join(hashtags))
     description = "\n\n".join(p for p in parts if p)
@@ -132,6 +157,10 @@ class MetadataGenerator:
                 raise ContentValidationError(f"title 이 너무 길다 ({len(meta.title)}자). 40자 이내로 줄여라.")
             if not meta.description.strip():
                 raise ContentValidationError("description 이 비어 있다.")
+            if not meta.description_en.strip() or not meta.title_en.strip():
+                raise ContentValidationError("title_en / description_en(영어 제목/설명)을 작성해야 한다.")
+            if re.search(r"[가-힣]", meta.title_en + meta.description_en):
+                raise ContentValidationError("title_en / description_en 은 영어로만 써야 한다 (한글 금지).")
 
         meta = self.client.generate_json(prompt, VideoMetadata, validate=_validate, temperature=0.7)
         return finalize_metadata(meta, content, research, assets, bgm)
@@ -147,7 +176,13 @@ def finalize_metadata(
     hashtags = build_hashtags(meta.hashtags)
     credits = build_credits(research, assets, bgm)
     title = meta.title.strip().replace("<", "").replace(">", "")[:100]
-    description = compose_description(meta.description, content.truth_status, content.truth_notice, credits, hashtags)
+    english = build_english_section(meta.title_en, meta.description_en, content.truth_status)
+    description = compose_description(
+        meta.description, content.truth_status, content.truth_notice, credits, hashtags, english=english
+    )
     tags = fit_tags(meta.tags + [h.lstrip("#") for h in hashtags])
-    logger.info("Metadata generated: %s", title)
-    return VideoMetadata(title=title, description=description, hashtags=hashtags, tags=tags)
+    logger.info("Metadata generated: %s / %s", title, meta.title_en or "-")
+    return VideoMetadata(
+        title=title, description=description, hashtags=hashtags, tags=tags,
+        title_en=meta.title_en.strip(), description_en=meta.description_en.strip(),
+    )

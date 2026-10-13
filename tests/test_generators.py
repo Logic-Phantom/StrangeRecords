@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 
 from app.ai.metadata_generator import MetadataGenerator
-from app.ai.scene_generator import SceneGenerator
+from app.ai.scene_generator import SceneGenerator, missing_english, translate_scenes
 from app.ai.script_generator import ScriptGenerator
 from app.ai.topic_generator import TopicGenerator
 from app.database.db import Database
@@ -58,7 +58,10 @@ def responses():
         "ScriptDraft": {"title": "사람만 사라진 배", "hook": "이 배는 바다 한가운데서 흔적도 없이 사라졌습니다.", "script": SCRIPT,
                         "ending": "행방은 모릅니다.", "comment_prompt": "왜 떠났을까요?", "truth_status": "FACT"},
         "SceneList": {"scenes": scenes},
-        "VideoMetadata": {"title": "바다에서 사라진 사람들", "description": "요약입니다.", "hashtags": ["#미스터리"], "tags": ["유령선"]},
+        "VideoMetadata": {"title": "바다에서 사라진 사람들", "description": "요약입니다.", "hashtags": ["#미스터리"], "tags": ["유령선"],
+                          "title_en": "The People Who Vanished at Sea", "description_en": "A summary."},
+        "SceneTranslations": {"translations": [{"scene_number": i + 1, "narration_en": f"Sentence {i + 1}."}
+                                               for i in range(len(sentences))]},
     }
 
 
@@ -87,6 +90,15 @@ def test_full_ai_chain(settings, tmp_path):
                             script=draft.script, scenes=scenes, truth_status=draft.truth_status)
     meta = MetadataGenerator(fake, settings).generate(content, notes, [], None)  # type: ignore[arg-type]
     assert meta.hashtags[-1] == "#Shorts" and "AI" in meta.description
+    # 한국어 설명 뒤에 해외 시청자용 영어 제목/설명
+    assert "🌏 English\nThe People Who Vanished at Sea\nA summary." in meta.description
+    assert meta.description.index("요약입니다.") < meta.description.index("🌏 English")
+
+    for scene in scenes:
+        scene.narration_en = ""
+    translate_scenes(fake, scenes, candidate.topic)  # type: ignore[arg-type]
+    assert [s.narration_en for s in scenes] == [f"Sentence {i}." for i in range(1, len(scenes) + 1)]
+    assert not missing_english(scenes)
 
 
 def test_history_is_sent_to_topic_prompt(settings, tmp_path):

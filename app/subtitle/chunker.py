@@ -13,28 +13,62 @@ from app.subtitle.whisper import Word
 
 _STRIP = re.compile(r"[\s\.,!?…·~\-\"'“”‘’()\[\]:;]+")
 _SENTENCE_END = re.compile(r"[.!?…]$")
+# 뒤 단어와 붙어 다니는 수사/관형사: 이 뒤에서 자막을 끊으면 "한 / 명도" 처럼 어색하다
+_NO_BREAK_AFTER = {
+    "한", "두", "세", "네", "다섯", "여섯", "일곱", "여덟", "아홉", "열", "스무", "몇", "수",
+    "이", "그", "저", "단", "약", "첫", "모든", "각", "매", "온", "그런", "이런", "어느", "무슨", "새", "옛",
+}
+_BREAK_PENALTY = 1000.0
 
 
 def _clen(text: str) -> int:
     return len(_STRIP.sub("", text))
 
 
+def _balanced(words: list[str], max_chars: int, max_words: int) -> list[list[str]]:
+    """한 구절(문장/쉼표 단위)을 가장 적은 덩어리 수로, 덩어리 길이가 최대한 고르게 나눈다.
+
+    앞에서부터 꽉 채우는 방식은 끝에 한 어절만 남아 자막이 툭 끊기듯 바뀌므로,
+    가능한 분할 중 글자 수 편차가 가장 작은 것을 고른다 (어절 수가 적어 DP 로 충분).
+    """
+    lens = [len(w) for w in words]
+    n_words = len(words)
+
+    def fits(i: int, j: int) -> bool:  # words[i:j] 가 한 덩어리가 될 수 있는가
+        return j - i == 1 or (sum(lens[i:j]) <= max_chars and j - i <= max_words)
+
+    fallback: list[list[str]] | None = None
+    for n in range(max(1, -(-sum(lens) // max(max_chars, 1))), n_words + 1):
+        target = sum(lens) / n
+        # best[k][j] = words[:j] 를 k 덩어리로 나눌 때 (편차 제곱합, 분할 위치)
+        best: list[dict[int, tuple[float, list[int]]]] = [{0: (0.0, [])}] + [{} for _ in range(n)]
+        for k in range(1, n + 1):
+            for j in range(1, n_words + 1):
+                for i, (cost, cuts) in best[k - 1].items():
+                    if i < j and fits(i, j):
+                        c = cost + (sum(lens[i:j]) - target) ** 2
+                        if j < n_words and words[j - 1] in _NO_BREAK_AFTER:
+                            c += _BREAK_PENALTY
+                        if j not in best[k] or c < best[k][j][0]:
+                            best[k][j] = (c, cuts + [j])
+        if n_words in best[n]:
+            cost, cuts = best[n][n_words]
+            parts = [words[a:b] for a, b in zip([0] + cuts, cuts)]
+            if cost < _BREAK_PENALTY or fallback is not None:
+                # 수사 뒤에서 끊어야만 하면 한 덩어리 더 나눠 본다 (그래도 안 되면 처음 결과)
+                return parts if cost < _BREAK_PENALTY else fallback
+            fallback = parts
+    return fallback or [[w] for w in words]
+
+
 def split_chunks(text: str, max_chars: int = 11, max_words: int = 3) -> list[str]:
-    """어절 단위로 짧게 묶는다. 문장 끝/쉼표에서는 반드시 끊는다."""
-    words = text.split()
-    chunks: list[str] = []
-    current: list[str] = []
-    for word in words:
-        candidate = " ".join(current + [word])
-        if current and (len(candidate.replace(" ", "")) > max_chars or len(current) >= max_words):
-            chunks.append(" ".join(current))
-            current = []
-        current.append(word)
+    """어절 단위로 묶는다. 문장 끝/쉼표에서는 반드시 끊고, 구절 안에서는 길이를 고르게 나눈다."""
+    clauses: list[list[str]] = [[]]
+    for word in text.split():
+        clauses[-1].append(word)
         if _SENTENCE_END.search(word) or word.endswith(","):
-            chunks.append(" ".join(current))
-            current = []
-    if current:
-        chunks.append(" ".join(current))
+            clauses.append([])
+    chunks = [" ".join(part) for clause in clauses if clause for part in _balanced(clause, max_chars, max_words)]
     # 마침표/쉼표는 화면에서 제거 (물음표/느낌표는 유지)
     cleaned = [re.sub(r"[.,…]+$", "", c).strip() for c in chunks]
     return [c for c in cleaned if c]
@@ -116,6 +150,8 @@ def build_subtitles(
     max_chars: int = 11,
     max_words: int = 3,
     min_display: float = 0.35,
+    english: bool = True,
+    max_gap_in_scene: float = 1.5,
 ) -> list[SubtitleChunk]:
     timing_map = {t.scene_number: t for t in timings}
     raw: list[tuple[float, float, str, Scene]] = []
@@ -132,11 +168,13 @@ def build_subtitles(
     chunks: list[SubtitleChunk] = []
     for i, (start, end, text, scene) in enumerate(raw):
         next_start = raw[i + 1][0] if i + 1 < len(raw) else end + 0.6
-        # 다음 자막 직전까지 유지해서 깜빡임을 줄이되 너무 길게 남기지 않는다
+        same_scene = i + 1 < len(raw) and raw[i + 1][3].scene_number == scene.scene_number
+        # 다음 자막 직전까지 유지해서 깜빡임을 줄인다: 같은 Scene 안에서는 빈 화면 없이 바로 이어지고,
+        # Scene 사이(장면 전환)는 짧은 쉼(0.6초 미만)이면 이어 붙인다
         end = max(end, start + min_display)
         if next_start > start:
             end = min(end, next_start)
-        if 0 <= next_start - end < 0.25:
+        if 0 <= next_start - end < (max_gap_in_scene if same_scene else 0.6):
             end = next_start
         words_in_chunk = text.split()
         highlights = [
@@ -144,7 +182,8 @@ def build_subtitles(
             if h and any(t == w.strip(".,!?") or (len(t) >= 2 and t in w) for t in h.split() for w in words_in_chunk)
         ]
         chunks.append(SubtitleChunk(index=i + 1, start=round(start, 3), end=round(end, 3), text=text,
-                                    highlights=highlights, scene_number=scene.scene_number))
+                                    highlights=highlights, scene_number=scene.scene_number,
+                                    text_en=scene.narration_en.strip() if english else ""))
     return chunks
 
 
@@ -157,4 +196,8 @@ def _fmt_srt(t: float) -> str:
 
 
 def to_srt(chunks: list[SubtitleChunk]) -> str:
-    return "\n".join(f"{c.index}\n{_fmt_srt(c.start)} --> {_fmt_srt(c.end)}\n{c.text}\n" for c in chunks)
+    """한국어 자막 + (있으면) 영어 자막 두 줄."""
+    return "\n".join(
+        f"{c.index}\n{_fmt_srt(c.start)} --> {_fmt_srt(c.end)}\n{c.text}\n" + (f"{c.text_en}\n" if c.text_en else "")
+        for c in chunks
+    )

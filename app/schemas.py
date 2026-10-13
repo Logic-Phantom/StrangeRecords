@@ -100,6 +100,7 @@ class Scene(BaseModel):
     start: float = 0.0
     end: float = 0.0
     narration: str
+    narration_en: str = ""          # 해외 시청자용 영어 자막 (narration 번역)
     subtitle: str = ""
     visual: str = ""
     visual_type: Literal["video", "image"] = "video"
@@ -141,6 +142,15 @@ class SceneList(BaseModel):
     scenes: list[Scene]
 
 
+class SceneTranslation(BaseModel):
+    scene_number: int
+    narration_en: str
+
+
+class SceneTranslations(BaseModel):
+    translations: list[SceneTranslation]
+
+
 class ShortsContent(BaseModel):
     title: str
     category: str
@@ -165,6 +175,9 @@ class VideoMetadata(BaseModel):
     description: str
     hashtags: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
+    # 해외 시청자용 영어 제목/설명 (설명란에 한국어와 함께 표기)
+    title_en: str = ""
+    description_en: str = ""
 
 
 # ----------------------------------------------------------------- media
@@ -203,6 +216,7 @@ class SubtitleChunk(BaseModel):
     text: str
     highlights: list[str] = Field(default_factory=list)
     scene_number: int = 0
+    text_en: str = ""               # 같은 Scene 의 영어 자막 (한국어 자막 아래 작게 표시)
 
 
 class SceneTiming(BaseModel):

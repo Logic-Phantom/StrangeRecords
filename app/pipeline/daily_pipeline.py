@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo
 
 from app.ai.gemini_client import GeminiClient
 from app.ai.metadata_generator import MetadataGenerator, finalize_metadata
-from app.ai.scene_generator import SceneGenerator, renumber
+from app.ai.scene_generator import SceneGenerator, missing_english, renumber, translate_scenes
 from app.ai.script_generator import ScriptGenerator
 from app.ai.topic_generator import TopicGenerator
 from app.assets.asset_manager import AssetManager, build_providers
@@ -314,8 +314,21 @@ class DailyPipeline:
         self.assets_repo.replace_for_job(ctx.id, assets)
         write_json(self.paths.sources / f"{ctx.id}_assets.json", ctx.state["assets"])
 
+    def _ensure_english(self, ctx: JobContext, content: ShortsContent) -> None:
+        """영어 자막이 빠진 Scene 을 번역해 채운다. 실패해도 한국어 자막만으로 계속 제작한다."""
+        if not self.settings.subtitle.english or self.options.offline or not missing_english(content.scenes):
+            return
+        try:
+            translate_scenes(self.gemini, content.scenes, content.topic)
+        except Exception as exc:
+            logger.warning("영어 자막 번역 실패 → 한국어 자막만 사용: %s", exc)
+            return
+        ctx.state["content"] = content.model_dump()
+        write_json(self.paths.scripts / f"{ctx.id}.json", ctx.state["content"])
+
     def step_subtitles(self, ctx: JobContext) -> None:
         content = self._content(ctx)
+        self._ensure_english(ctx, content)
         narration = Path(ctx.state["narration"]["path"])
         words_file = self.paths.subtitles / f"{ctx.id}_words.json"
 
@@ -336,7 +349,7 @@ class DailyPipeline:
         sub = self.settings.subtitle
         chunks = build_subtitles(
             content.scenes, self._timings(ctx), words,
-            text_source=sub.text_source, max_chars=sub.max_chars, max_words=sub.max_words,
+            text_source=sub.text_source, max_chars=sub.max_chars, max_words=sub.max_words, english=sub.english,
         )
         srt = self.paths.subtitles / f"{ctx.id}.srt"
         srt.write_text(to_srt(chunks), encoding="utf-8")
@@ -385,7 +398,8 @@ class DailyPipeline:
             fx = self._fixture()["content"]
             meta = finalize_metadata(
                 VideoMetadata(title=fx.get("title", content.title), description=fx.get("description", ""),
-                              hashtags=fx.get("hashtags", []), tags=fx.get("tags", [])),
+                              hashtags=fx.get("hashtags", []), tags=fx.get("tags", []),
+                              title_en=fx.get("title_en", ""), description_en=fx.get("description_en", "")),
                 content, research, assets, bgm,
             )
         else:
