@@ -212,3 +212,29 @@ def test_huggingface_unavailable_without_key_or_offline(settings):
     settings.secrets.hf_api_key = "hf_test"
     offline = next(p for p in build_providers(settings, None, ai_fallback=False) if isinstance(p, HuggingFaceImageProvider))
     assert not offline.available
+
+
+class FlakySession(FakeSession):
+    """응답 순서대로 돌려주고, Exception 이면 raise (타임아웃 흉내)."""
+
+    def __init__(self, responses):
+        super().__init__(None)
+        self.responses = list(responses)
+
+    def post(self, url, json=None, headers=None, timeout=None):
+        self.calls.append({"url": url})
+        item = self.responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def test_cloudflare_intermittent_timeouts_do_not_exclude_provider(settings, tmp_path, monkeypatch):
+    import requests
+
+    monkeypatch.setattr("app.utils.retry.random.uniform", lambda a, b: 0)
+    ok, timeout = FakeResponse(content=_png((768, 1344))), requests.ReadTimeout("read timed out")
+    # scene1: 타임아웃 2회(실패) → scene2 성공 → scene3: 타임아웃 2회(실패) → scene4 성공
+    session = FlakySession([timeout, timeout, ok, timeout, timeout, ok])
+    assets = _cf_manager(settings, session).collect(_scenes(4), tmp_path / "assets", "dark")
+    assert [a.source for a in assets] == ["procedural", "cf_image", "procedural", "cf_image"]

@@ -393,6 +393,12 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 - 자막 크기 축소 (한국어 92 → 72px, 영어 38px), 자막 덩어리를 문장/쉼표 단위 안에서 길이가 고르게 나뉘도록 변경(끝에 한 어절만 남는 깜빡임 방지, "한 / 명도" 처럼 수사 뒤에서 끊지 않음), 같은 Scene 안에서는 자막 사이 빈 화면 없이 이어짐, 장면 전환 크로스페이드 0.3 → 0.5초
 - 자동 테스트 51개 통과, `test --offline` 로 실제 TTS(새 주소)·Whisper·렌더링 확인
 
+**10/13 영상 재제작 (Actions run `38391291911`, workflow_dispatch `today`)**
+- 실패했던 job `20261013-064242` 를 `voice` 단계부터 이어서 완성, 19분 소요 → https://youtube.com/shorts/8KUWyvwXjqI (public)
+- 음성: 새 주소로 8개 Scene 합성 성공 (500 1회 → 재시도로 통과), 영어 자막 번역 8개 Scene, 메타데이터는 Gemini 503 과부하로 `gemini-2.5-flash` 로 자동 전환
+- 시각자료: Cloudflare 가 느려(장당 53~102초) 2개 Scene 이 120초 타임아웃 → 오류 횟수가 "연속"이 아니라 누적으로 세어져 Cloudflare 가 중간에 제외됨 → **8개 중 4개만 AI 이미지**, 나머지는 자체 그래픽
+  - 수정: 성공하면 오류 횟수 초기화(연속 2회 실패일 때만 제외), Cloudflare `timeout` 120 → 180초. 자동 테스트 52개 통과
+
 ### 남은 작업
 
 1. 시각자료 보조 수단(선택): Cloudflare 무료 한도(하루 10,000 Neurons)나 장애에 대비

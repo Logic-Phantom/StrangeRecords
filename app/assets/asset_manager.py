@@ -117,6 +117,8 @@ class AssetManager:
                             break
                         continue
                     if asset:
+                        # 제외 기준은 "연속" 오류 → 성공하면 다시 0 부터 센다 (간헐적 타임아웃으로 제외되지 않도록)
+                        self.failure_counts.pop(provider.name, None)
                         return asset
                 if provider.name in self.failed_providers:
                     break
