@@ -160,3 +160,219 @@ class StepLogRepository:
                 "INSERT INTO step_logs (job_id, step, status, message, duration_s, created_at) VALUES (?, ?, ?, ?, ?, ?)",
                 (job_id, step, status, message[:2000], duration_s, now_iso(self.tz)),
             )
+
+
+# ====================================================================== growth engine
+_PERF_METRIC_COLUMNS = (
+    "views", "engaged_views", "estimated_minutes_watched", "average_view_duration", "average_view_percentage",
+    "likes", "comments", "shares", "subscribers_gained", "subscribers_lost",
+)
+_PERF_COLUMNS = (
+    "job_id", "youtube_video_id", "collected_at", "collected_date", "published_at", "hours_since_publish",
+    "report_start_date", "report_end_date", *_PERF_METRIC_COLUMNS,
+    "public_view_count", "public_like_count", "public_comment_count", "duration_seconds",
+    "source", "collection_status", "missing_metrics", "error", "raw_json",
+)
+
+
+def _row_dict(row: Any) -> dict[str, Any]:
+    out = dict(row)
+    for key in ("missing_metrics", "raw_json", "related_terms", "components", "weights", "reasons", "trend_sources", "extra_json"):
+        if key in out and isinstance(out[key], str):
+            try:
+                out[key] = json.loads(out[key])
+            except ValueError:
+                pass
+    return out
+
+
+class PerformanceRepository:
+    """video_performance_snapshots / studio_metrics."""
+
+    METRIC_COLUMNS = _PERF_METRIC_COLUMNS
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def upsert_snapshot(self, snapshot: dict[str, Any]) -> None:
+        """같은 영상 + 같은 수집일(collected_date)이면 덮어쓴다 (하루 여러 번 수집해도 1행)."""
+        data = {c: snapshot.get(c) for c in _PERF_COLUMNS}
+        data["missing_metrics"] = json.dumps(snapshot.get("missing_metrics") or [], ensure_ascii=False)
+        data["raw_json"] = json.dumps(snapshot.get("raw_json") or {}, ensure_ascii=False, default=str)
+        cols = ", ".join(data)
+        marks = ", ".join("?" * len(data))
+        updates = ", ".join(f"{c} = excluded.{c}" for c in data if c not in ("youtube_video_id", "collected_date"))
+        with self.db.session() as conn:
+            conn.execute(
+                f"INSERT INTO video_performance_snapshots ({cols}) VALUES ({marks}) "
+                f"ON CONFLICT(youtube_video_id, collected_date) DO UPDATE SET {updates}",
+                tuple(data.values()),
+            )
+
+    def snapshots(self, video_id: str | None = None) -> list[dict[str, Any]]:
+        query, params = "SELECT * FROM video_performance_snapshots", []
+        if video_id:
+            query += " WHERE youtube_video_id = ?"
+            params.append(video_id)
+        query += " ORDER BY youtube_video_id, collected_at"
+        with self.db.session() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [_row_dict(r) for r in rows]
+
+    def latest_by_video(self) -> dict[str, dict[str, Any]]:
+        """영상별 가장 최근의 성공(ok/partial) 스냅샷."""
+        with self.db.session() as conn:
+            rows = conn.execute(
+                """SELECT s.* FROM video_performance_snapshots s
+                   JOIN (SELECT youtube_video_id, MAX(collected_at) AS last FROM video_performance_snapshots
+                         WHERE collection_status IN ('ok', 'partial') GROUP BY youtube_video_id) m
+                     ON s.youtube_video_id = m.youtube_video_id AND s.collected_at = m.last"""
+            ).fetchall()
+        return {r["youtube_video_id"]: _row_dict(r) for r in rows}
+
+    def upsert_studio_metric(self, video_id: str, metric: str, value: float, source: str, imported_at: str,
+                             start: str = "", end: str = "") -> None:
+        with self.db.session() as conn:
+            conn.execute(
+                """INSERT INTO studio_metrics (youtube_video_id, metric, value, report_start_date, report_end_date, source, imported_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(youtube_video_id, metric, report_start_date, report_end_date)
+                   DO UPDATE SET value = excluded.value, source = excluded.source, imported_at = excluded.imported_at""",
+                (video_id, metric, float(value), start, end, source, imported_at),
+            )
+
+    def studio_metrics(self, video_id: str | None = None) -> dict[str, dict[str, dict[str, Any]]]:
+        """{video_id: {metric: {value, source, report_start_date, report_end_date}}} (같은 지표는 가장 최근 기간)."""
+        query, params = "SELECT * FROM studio_metrics", []
+        if video_id:
+            query += " WHERE youtube_video_id = ?"
+            params.append(video_id)
+        query += " ORDER BY report_end_date, imported_at"
+        out: dict[str, dict[str, dict[str, Any]]] = {}
+        with self.db.session() as conn:
+            for r in conn.execute(query, params).fetchall():
+                out.setdefault(r["youtube_video_id"], {})[r["metric"]] = {
+                    "value": r["value"], "source": r["source"],
+                    "report_start_date": r["report_start_date"], "report_end_date": r["report_end_date"],
+                }
+        return out
+
+
+class TrendRepository:
+    """trend_signals 저장 + 같은 날 캐시."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    def save(self, signal: dict[str, Any]) -> None:
+        data = dict(signal)
+        data["related_terms"] = json.dumps(data.get("related_terms") or [], ensure_ascii=False)
+        data["raw_json"] = json.dumps(data.get("raw_json") or {}, ensure_ascii=False, default=str)
+        data.setdefault("region", "")
+        cols = ", ".join(data)
+        marks = ", ".join("?" * len(data))
+        keys = ("provider", "kind", "keyword", "region", "collected_date")
+        updates = ", ".join(f"{c} = excluded.{c}" for c in data if c not in keys)
+        with self.db.session() as conn:
+            conn.execute(
+                f"INSERT INTO trend_signals ({cols}) VALUES ({marks}) "
+                f"ON CONFLICT(provider, kind, keyword, region, collected_date) DO UPDATE SET {updates}",
+                tuple(data.values()),
+            )
+
+    def cached(self, provider: str, kind: str, keyword: str, region: str, collected_date: str) -> dict[str, Any] | None:
+        with self.db.session() as conn:
+            row = conn.execute(
+                "SELECT * FROM trend_signals WHERE provider=? AND kind=? AND keyword=? AND region=? AND collected_date=?",
+                (provider, kind, keyword, region or "", collected_date),
+            ).fetchone()
+        return _row_dict(row) if row else None
+
+    def recent(self, since_date: str, kind: str | None = None) -> list[dict[str, Any]]:
+        query, params = "SELECT * FROM trend_signals WHERE collected_date >= ?", [since_date]
+        if kind:
+            query += " AND kind = ?"
+            params.append(kind)
+        query += " ORDER BY collected_at DESC"
+        with self.db.session() as conn:
+            return [_row_dict(r) for r in conn.execute(query, params).fetchall()]
+
+
+class TopicScoreRepository:
+    def __init__(self, db: Database, tz: str = "Asia/Seoul"):
+        self.db = db
+        self.tz = tz
+
+    def add_many(self, job_id: str | None, rows: Iterable[dict[str, Any]], strategy: str) -> None:
+        now = now_iso(self.tz)
+        with self.db.session() as conn:
+            conn.executemany(
+                """INSERT INTO topic_scores (job_id, title, topic, category, selected, duplicate, final_score,
+                                             components, weights, reasons, trend_sources, strategy, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        job_id, r["title"], r["topic"], r["category"], int(bool(r.get("selected"))),
+                        int(bool(r.get("duplicate"))), r.get("final_score"),
+                        json.dumps(r.get("components") or {}, ensure_ascii=False),
+                        json.dumps(r.get("weights") or {}, ensure_ascii=False),
+                        json.dumps(r.get("reasons") or [], ensure_ascii=False),
+                        json.dumps(r.get("trend_sources") or [], ensure_ascii=False),
+                        strategy, now,
+                    )
+                    for r in rows
+                ],
+            )
+
+    def for_job(self, job_id: str) -> list[dict[str, Any]]:
+        with self.db.session() as conn:
+            rows = conn.execute("SELECT * FROM topic_scores WHERE job_id = ? ORDER BY final_score DESC", (job_id,)).fetchall()
+        return [_row_dict(r) for r in rows]
+
+
+class ProductionMetadataRepository:
+    COLUMNS = (
+        "youtube_video_id", "topic_category", "topic_score", "trend_sources", "hook_type", "story_structure",
+        "loop_ending_enabled", "loop_quality_score", "visual_style", "hook_effect_preset", "video_duration",
+        "subtitle_mode", "title_strategy", "script_similarity_score", "originality_score", "extra_json",
+    )
+
+    def __init__(self, db: Database, tz: str = "Asia/Seoul"):
+        self.db = db
+        self.tz = tz
+
+    def upsert(self, job_id: str, **fields: Any) -> None:
+        data = {k: fields.get(k) for k in self.COLUMNS}
+        data["trend_sources"] = json.dumps(data.get("trend_sources") or [], ensure_ascii=False)
+        data["extra_json"] = json.dumps(data.get("extra_json") or {}, ensure_ascii=False, default=str)
+        data["loop_ending_enabled"] = int(bool(data.get("loop_ending_enabled")))
+        now = now_iso(self.tz)
+        cols = ", ".join(["job_id", *data, "created_at", "updated_at"])
+        marks = ", ".join("?" * (len(data) + 3))
+        updates = ", ".join(f"{c} = excluded.{c}" for c in [*data, "updated_at"])
+        with self.db.session() as conn:
+            conn.execute(
+                f"INSERT INTO production_metadata ({cols}) VALUES ({marks}) ON CONFLICT(job_id) DO UPDATE SET {updates}",
+                (job_id, *data.values(), now, now),
+            )
+
+    def get(self, job_id: str) -> dict[str, Any] | None:
+        with self.db.session() as conn:
+            row = conn.execute("SELECT * FROM production_metadata WHERE job_id = ?", (job_id,)).fetchone()
+        return _row_dict(row) if row else None
+
+    def all(self) -> list[dict[str, Any]]:
+        with self.db.session() as conn:
+            return [_row_dict(r) for r in conn.execute("SELECT * FROM production_metadata").fetchall()]
+
+
+def uploaded_jobs(db: Database, since_iso: str | None = None) -> list[JobRecord]:
+    """YouTube 에 올라간 작업 (성과 수집 대상)."""
+    query = "SELECT * FROM jobs WHERE youtube_video_id IS NOT NULL AND youtube_video_id != ''"
+    params: list[Any] = []
+    if since_iso:
+        query += " AND COALESCE(uploaded_at, created_at) >= ?"
+        params.append(since_iso)
+    query += " ORDER BY created_at DESC"
+    with db.session() as conn:
+        return [JobRecord.from_row(r) for r in conn.execute(query, params).fetchall()]

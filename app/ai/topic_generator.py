@@ -29,11 +29,14 @@ class TopicGenerator:
         history: list[TopicRecord],
         count: int | None = None,
         extra_exclusions: list[str] | None = None,
+        trend_hints: list | None = None,
+        performance_context: str = "",
     ) -> list[TopicCandidate]:
         count = count or self.settings.topic.candidate_count
         history_text = format_history(history)
         if extra_exclusions:
             history_text += "\n" + "\n".join(f"- (이번에 중복 판정된 후보) {t}" for t in extra_exclusions)
+        hints_text = "\n".join(h.line() for h in trend_hints or []) or "(없음 - 카테고리 안에서 자유롭게 제안)"
 
         prompt = load_prompt(
             "topic_prompt",
@@ -44,6 +47,8 @@ class TopicGenerator:
             category_guideline=category.guideline,
             history=history_text,
             count=count,
+            trend_hints=hints_text,
+            performance_context=performance_context or "(성과 데이터 없음)",
         )
 
         def _validate(result: TopicCandidates) -> None:

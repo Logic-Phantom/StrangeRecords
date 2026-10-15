@@ -68,7 +68,66 @@ topic:
   candidate_count: 8
   max_generation_rounds: 3     # 모든 후보가 중복이면 새로 생성하는 최대 횟수
   history_limit: 300           # 프롬프트/중복 검사에 사용하는 최근 주제 수
-  category_strategy: "rotate"  # rotate(가장 오래 안 쓴 카테고리) | random
+  # rotate(가장 오래 안 쓴 카테고리) | random
+  # | rotate_performance: 최근 diversity_window 개 카테고리는 쉬고, "오래 안 쓴 정도 60% + 채널 성과 지수 40%" 로 선택.
+  #   성과 표본(analytics.min_samples)이 부족하면 rotate 와 똑같이 동작한다.
+  category_strategy: "rotate_performance"
+  diversity_window: 2
+
+# ---------------------------------------------------------------------
+# 외부 트렌드 탐색 (보조 기능: 실패해도 기존 주제 생성 + 중복 검사로 진행)
+# ---------------------------------------------------------------------
+trends:
+  enabled: true
+  region: "KR"
+  language: "ko"
+  max_hints: 6                 # 주제 프롬프트에 넣는 채널 관련 트렌드 힌트 수
+  request_timeout: 15
+  # 채널 관련성 판단 단어 (카테고리 examples 와 함께 사용). 이 단어가 없는 화제는 힌트로 쓰지 않는다
+  channel_keywords: ["미스터리", "미제", "실종", "수수께끼", "괴담", "전설", "유령", "괴물", "심해", "생물", "멸종", "화석",
+                     "고대", "유적", "발굴", "발견", "고고학", "역사", "왕", "전쟁", "비밀", "암호", "착시", "퍼즐", "미확인",
+                     "UFO", "운석", "우주", "블랙홀", "현상", "실험", "탐사", "난파", "유령선", "저주", "미라", "피라미드"]
+  # 이 단어가 들어간 화제는 힌트로 쓰지 않음 (실제 피해자가 있는 강력 범죄/참사, 정치 이슈)
+  exclude_keywords: ["살인", "학대", "성폭", "저격", "피살", "참사", "학살", "자살", "테러", "사망 사고", "선거", "대통령"]
+  wikipedia:                   # Wikimedia Pageviews API (무료, Key 불필요)
+    enabled: true
+    days: 30                   # 최근 7일 평균 ÷ 이전 23일 평균 = 증가 속도
+    top_articles: true         # ko 위키백과 전날 인기 문서 → 채널 관련 힌트
+    target_daily_views: 3000   # 이 일평균 조회수면 관심도 1.0 (log 정규화)
+    min_interval: 1.0          # 요청 사이 최소 간격(초). 몰아서 보내면 429 → 429 를 받으면 이번 실행에서 위키백과 신호 중단
+    max_candidates: 5          # 후보 신호를 조회할 최대 후보 수 (덜 비슷한 후보부터, 한국어 문서 우선)
+  youtube:                     # YouTube Data API (YOUTUBE_API_KEY 또는 token.json)
+    enabled: true
+    most_popular: true         # videos.list chart=mostPopular (1 unit). 지역 인기 영상 목록일 뿐 범용 트렌드가 아님
+    max_results: 25
+    search_per_run: 3          # search.list 는 100 units/회 → 하루 최대 3회 (업로드 1회 약 1,600 units, 일일 10,000)
+    search_max_results: 15
+    recent_days: 30
+  google_trends:               # 공식 API 알파 (승인자만, 엔드포인트 비공개) → 승인 전에는 끔
+    enabled: false
+    endpoint: ""
+  scoring:
+    # 0~1 로 정규화한 구성 요소의 가중 평균 (값이 없는 요소는 빠지고 나머지로 재정규화) - 패널티
+    weights: {trend: 0.15, velocity: 0.10, channel_fit: 0.15, performance: 0.10, novelty: 0.20, story: 0.15, evidence: 0.15}
+    saturation_penalty: 0.15   # 최근 30일 같은 주제 영상 비율 × 이 값
+    duplicate_penalty: 0.20    # 기존 주제 중복 기준에 가까운 정도 × 이 값
+    min_channel_fit: 0.35      # 이보다 채널 관련성이 낮으면 외부 관심도 미반영
+    min_evidence_for_trend: 0.5  # 사실 확인 가능성이 낮은 후보(FICTION 등)는 외부 관심도 미반영
+    freshness_half_life_hours: 48
+
+# ---------------------------------------------------------------------
+# YouTube Analytics 성과 수집 (token.json 에 yt-analytics.readonly 필요, 없으면 공개 통계만)
+# ---------------------------------------------------------------------
+analytics:
+  enabled: true
+  lookback_days: 90            # 게시 후 이 기간 안의 영상만 수집/보고
+  max_videos_per_run: 30
+  checkpoints_hours: [24, 72, 168]   # 보고서의 시점별 비교 (각 시점 이후 첫 수집값 + 실제 경과 시간)
+  min_hours_for_judgement: 48  # 게시 후 이 시간 전에는 성과 판단 보류
+  min_samples: 3               # 비교에 필요한 최소 영상 수 (미만이면 "판단 불가", 제작에 반영 안 함)
+  shrinkage_k: 5               # 작은 표본을 채널 평균 쪽으로 당기는 강도
+  metrics: ["views", "engagedViews", "estimatedMinutesWatched", "averageViewDuration", "averageViewPercentage",
+            "likes", "comments", "shares", "subscribersGained", "subscribersLost"]
 
 duplicate:
   # 키워드 겹침(overlap coefficient)이 이 값 이상이면 즉시 중복
@@ -99,6 +158,19 @@ script:
   min_scenes: 5
   max_scenes: 9
   banned_phrases: ["충격 실화", "경악", "소름 돋는 진실 100%", "절대 클릭"]
+  # 자연스러운 루프 엔딩: 마지막 문장이 사건의 핵심을 회수하면서 첫 문장으로 자연스럽게 이어질 때만 사용
+  # (미완성 문장/콜론/결론 숨기기 금지). 품질 점수가 minimum_quality_score 미만이면 일반 결말로 기록
+  loop_ending:
+    enabled: true
+    mode: "natural"            # natural | off
+    require_semantic_continuity: true
+    minimum_quality_score: 0.75  # 0~1
+  quality:
+    compare_recent: 30         # 최근 N개 대본과 비교
+    max_script_similarity: 0.55  # 이 이상 비슷하면 재생성 (문자 bigram 유사도)
+    max_hook_similarity: 0.7   # 첫 문장이 최근 영상과 이만큼 비슷하면 재생성
+    max_hook_seconds: 6.0      # 첫 문장 낭독 시간 상한 (경고)
+    max_sentence_repeat: 0.85  # 대본 안 문장 반복 판정
 
 # ---------------------------------------------------------------------
 # 음성 (Edge TTS)
@@ -224,6 +296,17 @@ video:
   zoom_amount: 0.12            # Ken Burns 확대 비율
   outro_padding: 0.8           # 마지막 음성 후 여유(초)
   global_fade: 0.4
+  # 첫 장면 앞부분에만 거는 시각 Hook 효과 (자막 합성 전 클립에 적용, 이후 장면/자막/오디오는 그대로)
+  # preset: subtle(약한 흔들림+대비+노이즈) | vhs(대비+RGB 분리+노이즈) | glitch(흔들림+대비+짧은 RGB 글리치 최대 3회) | impact(강한 흔들림+대비) | none
+  # 필요한 FFmpeg 필터가 없으면 그 효과만 빼고, 렌더링이 실패하면 효과 없이 다시 만든다
+  hook_effect:
+    enabled: true
+    duration_seconds: 2.5
+    preset: "subtle"
+    allow_glitch: true
+    allow_noise: true
+    allow_shake: true
+    deterministic_seed: true   # 같은 작업은 같은 흔들림/글리치 위치 (재렌더링해도 동일)
 
 audio:
   bgm_enabled: true
@@ -248,6 +331,19 @@ quality:
   max_file_size_mb: 256
   max_black_ratio: 0.25
   black_min_duration: 0.5
+
+# ---------------------------------------------------------------------
+# 업로드 전 콘텐츠 검수 (critical 이면 업로드 금지 → 작업 상태 review_needed)
+# ---------------------------------------------------------------------
+review:
+  enabled: true
+  require_sources_for: ["FACT", "UNCONFIRMED"]   # 이 사실 여부의 주제는 자료 출처 필수
+  max_script_similarity: 0.6   # 최근 영상 대본과 이 이상 비슷하면 실질적으로 같은 구성 → critical
+  max_title_similarity: 0.75   # 최근 제목과 이 이상 비슷하면 다른 제목 후보로 교체 시도
+  template_window: 5           # 최근 N개와 도입 유형+첫 구절이 모두 같으면 반복 템플릿 경고
+  max_title_emoji: 1
+  min_ending_chars: 8
+  max_fix_attempts: 1          # 가벼운 문제(제목)의 자동 수정 횟수
 
 # ---------------------------------------------------------------------
 # YouTube

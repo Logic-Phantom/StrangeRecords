@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from app.ai.gemini_client import ContentValidationError, GeminiClient, load_prompt
+from app.ai.title_selector import select_title
 from app.config.settings import Settings
 from app.schemas import AssetInfo, AudioTrackInfo, ResearchNotes, ShortsContent, VideoMetadata
 from app.utils.logger import get_logger
@@ -36,6 +37,13 @@ SOURCE_LABELS = {
     "cf_image": "AI 생성 이미지(Stable Diffusion XL)",
     "procedural": "자체 제작 그래픽",
 }
+
+
+_YEAR = re.compile(r"(?<!\d)(1\d{3}|20\d{2})(?!\d)")
+
+
+def years(text: str) -> set[str]:
+    return set(_YEAR.findall(text or ""))
 
 
 def _clean_hashtag(tag: str) -> str:
@@ -137,6 +145,7 @@ class MetadataGenerator:
         research: ResearchNotes | None,
         assets: list[AssetInfo],
         bgm: AudioTrackInfo | None,
+        previous_titles: list[str] | None = None,
     ) -> VideoMetadata:
         category = self.settings.category(content.category)
         prompt = load_prompt(
@@ -147,7 +156,9 @@ class MetadataGenerator:
             truth_status=content.truth_status,
             truth_notice=content.truth_notice or "(없음)",
             draft_title=content.title,
+            hook=content.hook,
             script=content.script,
+            recent_titles="\n".join(f"- {t}" for t in (previous_titles or [])[:15]) or "(없음)",
         )
 
         def _validate(meta: VideoMetadata) -> None:
@@ -161,8 +172,18 @@ class MetadataGenerator:
                 raise ContentValidationError("title_en / description_en(영어 제목/설명)을 작성해야 한다.")
             if re.search(r"[가-힣]", meta.title_en + meta.description_en):
                 raise ContentValidationError("title_en / description_en 은 영어로만 써야 한다 (한글 금지).")
+            # 한국어/영어 설명이 서로 다른 사건을 말하지 않도록: 연도 등 숫자가 서로 일치해야 한다
+            missing = years(meta.description) ^ years(meta.description_en)
+            if missing:
+                raise ContentValidationError(
+                    f"description 과 description_en 의 연도가 다르다 ({', '.join(sorted(missing))}). 같은 사건을 같은 숫자로 설명하라."
+                )
 
         meta = self.client.generate_json(prompt, VideoMetadata, validate=_validate, temperature=0.7)
+        meta = select_title(meta, content, previous_titles, self.settings.script.banned_phrases,
+                            self.settings.review.max_title_emoji)
+        if meta.title_selection:
+            logger.info("제목 선택: %s (%s) / 후보 %d개", meta.title, meta.title_strategy, len(meta.title_selection))
         return finalize_metadata(meta, content, research, assets, bgm)
 
 
@@ -185,4 +206,5 @@ def finalize_metadata(
     return VideoMetadata(
         title=title, description=description, hashtags=hashtags, tags=tags,
         title_en=meta.title_en.strip(), description_en=meta.description_en.strip(),
+        title_candidates=meta.title_candidates, title_strategy=meta.title_strategy, title_selection=meta.title_selection,
     )

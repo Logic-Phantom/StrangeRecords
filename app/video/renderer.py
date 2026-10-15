@@ -13,6 +13,7 @@ from app.config.settings import Settings
 from app.schemas import AssetInfo, AudioTrackInfo, Scene, SceneTiming, SubtitleChunk
 from app.utils.logger import get_logger
 from app.video.ffmpeg import run_ffmpeg
+from app.video.hook_effect import build_hook_effect
 from app.video.scenes import build_scene_clip
 from app.video.subtitle_renderer import SubtitleRenderer
 
@@ -25,6 +26,7 @@ class RenderResult:
     duration: float
     thumbnail_path: Path | None
     sfx_used: list[dict]
+    hook_effect: dict | None = None
 
 
 def scene_durations(timings: list[SceneTiming], total: float) -> list[float]:
@@ -40,6 +42,7 @@ class VideoRenderer:
         self.audio_cfg = settings.audio
         self.library = audio_library
         self.subtitles = SubtitleRenderer(settings.subtitle, settings.video, settings.paths.fonts)
+        self.hook_effect: dict = {"preset": "none", "applied": False}
 
     # ------------------------------------------------------------ video
     def _join(self, clips: list[Path], durations: list[float], out: Path) -> Path:
@@ -68,7 +71,26 @@ class VideoRenderer:
         )
         return out
 
-    def build_base_video(self, scenes: list[Scene], assets: list[AssetInfo], timings: list[SceneTiming], total: float, work: Path) -> Path:
+    def _first_clip_with_hook(self, asset: AssetInfo, duration: float, effect: str, clip: Path, seed: str,
+                              scene_length: float) -> None:
+        """첫 Scene 에만 Hook 효과. 필터가 없거나 렌더링이 실패하면 효과 없이 다시 만든다 (제작은 멈추지 않음)."""
+        plan = build_hook_effect(self.cfg.hook_effect, self.cfg, scene_length, seed=seed)
+        if not plan:
+            self.hook_effect = {"preset": "none", "applied": False,
+                                "reason": "비활성" if not self.cfg.hook_effect.enabled else "사용 가능한 효과 없음"}
+            build_scene_clip(asset, duration, effect, clip, self.cfg)
+            return
+        try:
+            build_scene_clip(asset, duration, effect, clip, self.cfg, extra_filter=plan.filter)
+            self.hook_effect = {**plan.to_dict(), "applied": True}
+            logger.info("첫 장면 Hook 효과 적용: %s (%s, %.1f초)", plan.preset, "+".join(plan.components), plan.duration)
+        except Exception as exc:
+            logger.warning("Hook 효과 렌더링 실패 → 효과 없이 첫 장면 생성: %s", str(exc).splitlines()[0])
+            self.hook_effect = {**plan.to_dict(), "applied": False, "reason": f"렌더링 실패: {str(exc)[:300]}"}
+            build_scene_clip(asset, duration, effect, clip, self.cfg)
+
+    def build_base_video(self, scenes: list[Scene], assets: list[AssetInfo], timings: list[SceneTiming], total: float,
+                         work: Path, hook_seed: str = "") -> Path:
         asset_map = {a.scene_number: a for a in assets}
         durations = scene_durations(timings, total)
         use_xfade = self.cfg.transition == "fade" and len(scenes) > 1
@@ -77,7 +99,12 @@ class VideoRenderer:
             # xfade 는 겹치는 만큼 앞 클립이 길어야 전체 길이와 Scene 시작 시간이 유지된다
             extra = self.cfg.transition_duration if use_xfade and i < len(scenes) - 1 else 0.0
             clip = work / f"clip_{scene.scene_number:02d}.mp4"
-            build_scene_clip(asset_map[scene.scene_number], duration + extra, scene.effect, clip, self.cfg)
+            if i == 0:
+                # 효과 길이는 첫 Scene 의 실제 길이(전환 겹침 제외) 안으로 제한
+                self._first_clip_with_hook(asset_map[scene.scene_number], duration + extra, scene.effect, clip,
+                                           hook_seed or str(scene.scene_number), scene_length=duration)
+            else:
+                build_scene_clip(asset_map[scene.scene_number], duration + extra, scene.effect, clip, self.cfg)
             clips.append(clip)
         logger.info("Scene 클립 %d개 생성", len(clips))
         return self._join(clips, durations, work / "base.mp4")
@@ -96,11 +123,12 @@ class VideoRenderer:
         out_path: Path,
         work: Path,
         thumbnail_path: Path | None = None,
+        hook_seed: str = "",
     ) -> RenderResult:
         logger.info("Rendering started")
         work.mkdir(parents=True, exist_ok=True)
         total = round(narration_duration + self.cfg.outro_padding, 3)
-        base = self.build_base_video(scenes, assets, timings, total, work)
+        base = self.build_base_video(scenes, assets, timings, total, work, hook_seed=hook_seed)
         sub_list = self.subtitles.build_track(chunks, total, work / "subs", title=title)
 
         sr = self.cfg.audio_sample_rate
@@ -186,4 +214,4 @@ class VideoRenderer:
                 thumb = thumbnail_path
             except Exception as exc:
                 logger.warning("썸네일 생성 실패: %s", exc)
-        return RenderResult(out_path, total, thumb, sfx_used)
+        return RenderResult(out_path, total, thumb, sfx_used, self.hook_effect)

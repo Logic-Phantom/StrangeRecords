@@ -32,6 +32,9 @@ timeout /t 20 /nobreak > nul
 goto wait_network
 :network_ready
 
+REM 이전 영상 성과 수집 (보조 기능: 실패해도 제작은 계속)
+"%PY%" -m app.main analytics sync >> "logs\task_scheduler.log" 2>&1
+
 "%PY%" -m app.main today >> "logs\task_scheduler.log" 2>&1
 set RC=%ERRORLEVEL%
 echo [%date% %time%] run_daily end (exit %RC%) >> "logs\task_scheduler.log"

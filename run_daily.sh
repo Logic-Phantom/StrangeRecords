@@ -6,6 +6,8 @@ PY=".venv/bin/python"
 [ -x "$PY" ] || PY="python3"
 mkdir -p logs
 echo "[$(date '+%F %T')] run_daily start" >> logs/task_scheduler.log
+# 이전 영상 성과 수집 (보조 기능: 실패해도 제작은 계속)
+"$PY" -m app.main analytics sync >> logs/task_scheduler.log 2>&1 || true
 "$PY" -m app.main today >> logs/task_scheduler.log 2>&1
 RC=$?
 echo "[$(date '+%F %T')] run_daily end (exit $RC)" >> logs/task_scheduler.log

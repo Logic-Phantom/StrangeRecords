@@ -2,6 +2,8 @@
 
 매일 **새로운 주제 선정 → 자료 조사 → 대본 → 음성 → 시각자료 → 자막 → 편집 → 품질 검사 → YouTube 업로드(즉시 공개) → 이력 저장** 을 자동으로 수행하는 Python 프로젝트입니다. (GitHub Actions 로 매일 22:07 KST 실행 — PC 를 켜 두지 않아도 됨)
 
+2026-10-15 부터 **성장 엔진**이 추가되었습니다: 업로드한 영상의 YouTube 성과를 수집·분석하고, 외부 관심 신호(위키백과 조회수, YouTube)와 함께 다음 영상의 주제 선정·대본·편집에 반영합니다 (→ [14절](#14-성장-엔진-트렌드--성과-분석--자동-개선)).
+
 - AI 엔진: **Google Gemini API 하나만 사용** (기본 `gemini-3.5-flash`, 과부하 시 자동 대체 모델 전환, 모델명은 `config.yaml` 한 곳에서 관리)
 - 음성: Edge TTS (무료) · 시각자료: **대본 기반 AI 장면 이미지: Cloudflare Workers AI / Hugging Face SDXL** (Gemini 이미지는 무료 티어 한도 0 이라 비활성) → Pexels / Pixabay (무료 API) · 자막: faster-whisper (로컬) · 편집: FFmpeg · DB: SQLite
 - 출력: **1080x1920 · 9:16 · 30fps · H.264 · AAC · MP4**, 한국어 40~60초, **한국어 + 영어 자막 / 한국어 + 영어 설명란** (해외 시청자용)
@@ -11,16 +13,22 @@
 ## 1. 파이프라인
 
 ```text
-[1] DB 기존 주제 조회 → [2] Gemini 주제 후보 → [3] 중복 검사(키워드 + 텍스트 유사도 + Gemini 의미 판단)
-→ [4] 최종 주제 → [5] 자료 조사(Wikipedia + Gemini 사실/추측 구분) → [6] Gemini 대본(Hook 포함)
-→ [7] 대본 검증(길이/금지표현/사실여부 고지) → [8] Gemini Scene 분할 + 영어 검색어
+[0] (보조) 이전 영상 성과 수집: YouTube Analytics + 공개 통계 → SQLite
+[1] DB 기존 주제 조회 + 카테고리 선택(순환 + 성과 반영) → [1-1] (보조) 채널 관련 트렌드 힌트 수집
+→ [2] Gemini 주제 후보 → [3] 중복 검사(키워드 + 텍스트 유사도 + Gemini 의미 판단)
+→ [3-1] 후보별 외부 신호(위키백과 조회수/증가 속도, YouTube 과밀도) + 채널 성과 → 점수 → [4] 최종 주제 + 선정 근거 기록
+→ [5] 자료 조사(Wikipedia + Gemini 사실/추측 구분) → [6] Gemini 대본(Hook, 전개 단계, 자연스러운 루프 엔딩)
+→ [7] 대본 검증(길이/금지표현/사실여부 고지 + 반복/단정/최근 대본 유사도/루프 품질) → [8] Gemini Scene 분할 + 영어 검색어
 → [9] Edge TTS (Scene 별 합성 → 실제 길이 확정, 길면 속도 자동 조정)
 → [10] AI 장면 이미지(Scene 별 visual_prompt: Gemini → Hugging Face) → Pexels → Pixabay → 로컬 → 자체 그래픽 순으로 자료 수집
 → [11] faster-whisper 단어 타이밍 + 대본 텍스트 정렬 → Shorts 자막
-→ [12] FFmpeg: 9:16 crop / Ken Burns / 전환 / 자막 / BGM 덕킹 / 효과음 / -14 LUFS
-→ [13] 품질 검사(실패 시 업로드 금지) → [14] Gemini 제목·설명·해시태그 (+ 출처 자동 표기)
-→ [15] YouTube 업로드 → [16] 공개(즉시 또는 12:00 예약) → [17] SQLite + JSON 이력 저장
+→ [12] FFmpeg: 9:16 crop / Ken Burns / 첫 장면 Hook 효과 / 전환 / 자막 / BGM 덕킹 / 효과음 / -14 LUFS
+→ [13] 품질 검사(실패 시 업로드 금지) → [14] Gemini 제목 후보 3개·설명·해시태그 (+ 출처 자동 표기) → 제목 평가/선택
+→ [14-1] 콘텐츠 검수(출처/단정/독창성/라이선스/AI 고지, critical 이면 업로드 금지 → review_needed)
+→ [15] YouTube 업로드 → [16] 공개(즉시 또는 12:00 예약) → [17] SQLite + JSON 이력 + 제작 조건(production_metadata) 저장
 ```
+
+[0]·[1-1]·[3-1] 은 보조 기능입니다. 외부 API/권한이 없거나 실패해도 기존 방식(Gemini 후보 + 중복 검사 + 카테고리 순환)으로 제작·업로드합니다.
 
 음성을 시각자료보다 먼저 만드는 이유: Scene 별 실제 음성 길이를 알아야 영상 클립 길이를 정확히 고를 수 있기 때문입니다.
 
@@ -57,8 +65,11 @@ bash scripts/setup_macos.sh
 | `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` | 권장 | 무료 (하루 10,000 Neurons, SDXL 0원) | https://dash.cloudflare.com → Workers AI → REST API 사용 → Account ID 복사 + "Workers AI" API 토큰 생성 |
 | `HF_API_KEY` | 선택 | 크레딧 필요 | https://huggingface.co/settings/tokens → Fine-grained 토큰, **"Make calls to Inference Providers"** 권한 체크 |
 | `YOUTUBE_CLIENT_ID` / `YOUTUBE_CLIENT_SECRET` | 업로드 시 | 무료 (일일 할당량 10,000 units) | Google Cloud Console → YouTube Data API v3 사용 설정 → OAuth 클라이언트 ID(**데스크톱 앱**) |
+| `YOUTUBE_API_KEY` | 선택 | 무료 (Data API 할당량) | 트렌드 신호 조회용. 없으면 `token.json`(youtube.readonly)으로 조회 |
+| YouTube Analytics 권한 | 성과 수집 시 | 무료 | Key 없음. Cloud Console 에서 **YouTube Analytics API** 사용 설정 + `auth` 재인증 (14.2절) |
+| `GOOGLE_TRENDS_API_KEY` | - | - | 공식 API 는 **알파(승인자만)** → 승인 전에는 사용 안 함 |
 | Edge TTS | - | 무료, Key 불필요 | - |
-| Wikipedia | - | 무료, Key 불필요 | - |
+| Wikipedia / Wikimedia Pageviews | - | 무료, Key 불필요 | 자료 조사 + 관심도 신호 |
 
 - 시각자료는 Scene 마다 대본 내용대로 그린 AI 이미지를 사용합니다. **2026-10-13 부터 Gemini 이미지(`assets.ai_image.enabled: false`)는 쓰지 않고 Cloudflare → Hugging Face 순으로 그립니다.** 아래는 Gemini 이미지를 다시 켤 때의 설명입니다 (`assets.ai_image`). 같은 `GEMINI_API_KEY` 를 쓰지만, 무료 티어에서 이미지 모델이 막혀 있으면 [Google AI Studio](https://aistudio.google.com/) 에서 **결제(Billing) 연결**이 필요합니다 (장당 약 $0.04, 영상 1개 6~9장).
 - Gemini 이미지가 실패(무료 티어 `limit: 0`, 429 RESOURCE_EXHAUSTED, 권한 오류)하면 **같은 Scene 에서 바로 Cloudflare Workers AI** (`assets.cf_image`, `@cf/stabilityai/stable-diffusion-xl-base-1.0`, 768x1344, 무료)로 같은 프롬프트를 그립니다. 인증 오류·무료 한도 초과(429)면 이번 작업에서 제외하고 다음 provider 로 넘어갑니다.
@@ -79,13 +90,19 @@ bash scripts/setup_macos.sh
 python -m app.main today        # 오늘 영상 제작 (production 모드면 업로드 + 12:00 예약 공개)
 python -m app.main test         # 영상까지만 제작 (업로드 안 함)
 python -m app.main test --offline   # Gemini 없이 샘플 대본(tests/fixtures)으로 제작
-python -m app.main topic        # 주제 후보 + 중복 검사 결과 미리보기 (저장 안 함)
+python -m app.main topic        # 주제 후보 + 중복 검사 + 점수/선정 근거 미리보기 (주제 저장 안 함, --no-trends: 기존 방식)
+python -m app.main trends --category legendary_creatures --keyword "크라켄"   # 트렌드 신호 미리보기
+python -m app.main analytics sync              # 업로드 영상 성과 수집 (--days 30, --video ID)
+python -m app.main analytics report            # 성과 보고서 (--days 30, --format json|csv, --output 경로)
+python -m app.main analytics status            # token.json 의 Analytics 권한 점검
+python -m app.main analytics import-csv studio.csv   # Studio 전용 지표(피드 노출, 시청 선택 비율) 가져오기
 python -m app.main history      # 제작 이력
 python -m app.main retry [JOB]  # 실패 작업을 실패한 단계부터 재시도
 python -m app.main remake [JOB] --from-step voice   # 완료된 작업을 그 단계부터 다시 제작 + 업로드 (영상 삭제 후 다시 올릴 때)
 python -m app.main upload [JOB] # 제작 완료(rendered) 영상 업로드
 python -m app.main upload --privacy private   # 이번 업로드만 비공개로 (scheduled | public 도 가능)
-python -m app.main auth         # YouTube 최초 OAuth 인증 (token.json 저장)
+python -m app.main upload JOB --approve-review   # 콘텐츠 검수 보류(review_needed) 작업을 사람이 확인 후 업로드
+python -m app.main auth         # YouTube OAuth 인증 (업로드 + 읽기 + Analytics 읽기, token.json 저장. --no-analytics: 기존 권한만)
 python -m app.main setup        # 폴더/DB/기본 BGM·효과음 생성
 python -m app.main doctor       # 환경 점검
 python -m app.main models       # 사용 가능한 Gemini 모델 목록
@@ -148,8 +165,13 @@ youtube:
    | `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` | Cloudflare Workers AI (권장, 무료 AI 이미지) |
    | `HF_API_KEY` | Hugging Face 토큰 (선택, 크레딧 필요) |
    | `PEXELS_API_KEY` / `PIXABAY_API_KEY` | 선택 |
+   | `STATE_DB_KEY` | **권장** — `pipeline-state` 브랜치의 DB 를 AES-256 으로 암호화하는 비밀번호 (아래 주의) |
+   | `YOUTUBE_API_KEY` | 선택 — 트렌드 신호용 (없으면 `YOUTUBE_TOKEN_JSON` 사용) |
+   | `GOOGLE_TRENDS_API_KEY` | 선택 — Google Trends 알파 승인 시에만 |
 2. **Actions → Daily Shorts → Run workflow** 로 수동 실행해 확인 (`test` = 제작만, `today` = 제작 + 업로드, `remake` = 완료된 작업(`job`, 비우면 오늘 것)을 `from_step` 단계부터 다시 제작 + 업로드)
-- 주제 이력/하루 1개 정책 DB(`data/database.sqlite`)는 실행마다 `pipeline-state` 브랜치에 저장되어 다음 실행이 이어 씁니다.
+- 주제 이력/하루 1개 정책/성과 이력 DB(`data/database.sqlite`)는 실행마다 `pipeline-state` 브랜치에 저장되어 다음 실행이 이어 씁니다.
+  - ⚠️ **공개 저장소**이므로 이 DB 는 누구나 내려받을 수 있습니다. 성과 수집을 켜면 평균 시청 비율·구독 증감 같은 **비공개 Analytics 지표**가 DB 에 들어가므로 `STATE_DB_KEY` Secret 을 등록하세요 → 다음 실행부터 `database.sqlite.enc`(AES-256, openssl)로 저장하고 평문 파일은 브랜치에서 지웁니다 (이전 커밋 이력의 평문 DB 에는 성과 데이터가 없음). Secret 을 지우면 다시 평문으로 저장합니다. 키를 잃어버리면 DB 를 복원할 수 없습니다.
+- 실행 순서: DB 복원 → **성과 수집(`analytics sync`, 실패해도 계속)** → `today`(트렌드·성과를 반영한 주제 선정 → 제작 → 검수 → 업로드) → DB 저장. 성과 수치는 Actions 로그에 출력하지 않습니다(건수만).
 - 실패하면 같은 서버에서 5분/10분 뒤 실패한 단계부터 최대 3회 실행합니다. 완성 영상은 Actions 실행 화면의 Artifacts 에 3일 보관됩니다.
 - YouTube 토큰을 다시 받아야 할 때(권한 철회, 비밀번호 변경 등): 로컬에서 `token.json` 삭제 → `auth` → 새 `token.json` 내용으로 `YOUTUBE_TOKEN_JSON` 갱신
 - 같은 날 이미 업로드했으면(수동 실행 포함) 22:07 실행은 바로 종료됩니다.
@@ -183,26 +205,29 @@ bash scripts/install_macos_launchd.sh 10 0
 
 ```text
 app/
-├── main.py                    # CLI
+├── main.py                    # CLI (analytics / trends 하위 명령 포함)
 ├── schemas.py                 # 콘텐츠 데이터 구조 (Gemini JSON 검증)
 ├── config/  settings.py, config.yaml
 ├── ai/      gemini_client.py, topic_generator.py, script_generator.py, scene_generator.py,
 │            metadata_generator.py, validator.py, json_parser.py, prompts/*.txt
-├── topics/  duplicate_checker.py, selector.py
+│            script_quality.py (대본 품질·루프 엔딩), title_selector.py (제목 후보 평가)
+├── topics/  duplicate_checker.py, selector.py, scoring.py (주제 점수)
+├── trends/  base.py (TrendProvider), wikipedia.py, youtube.py, google_trends.py (알파, 비활성), collector.py
+├── analytics/ youtube_analytics.py (API), sync.py (수집), report.py (보고서), insights.py (제작 반영), studio_import.py
 ├── research/researcher.py     # Wikipedia 자료 수집
 ├── voice/   base.py, edge_tts.py, narration.py
 ├── assets/  base.py, pexels.py, pixabay.py, local.py, image_generator.py, asset_manager.py,
 │            audio_library.py, synth_audio.py
 ├── subtitle/whisper.py, chunker.py
-├── video/   ffmpeg.py, scenes.py, subtitle_renderer.py, renderer.py
-├── quality/ checker.py
+├── video/   ffmpeg.py, scenes.py, subtitle_renderer.py, renderer.py, hook_effect.py (첫 3초 효과)
+├── quality/ checker.py (영상 규격), content_checker.py (콘텐츠 검수/업로드 게이트)
 ├── youtube/ auth.py, uploader.py
 ├── database/db.py, models.py, repositories.py
 ├── scheduler/scheduler.py
 ├── pipeline/daily_pipeline.py
 └── utils/   logger.py, files.py, retry.py
 assets/  music/ (BGM + music.json)  sfx/  images/  videos/  fonts/
-data/    database.sqlite  topics/  scripts/  metadata/  sources/
+data/    database.sqlite  topics/  scripts/  metadata/  sources/  reports/
 output/  audio/  videos/  subtitles/  thumbnails/  work/
 ```
 
@@ -258,6 +283,15 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 | Windows Scheduler / run_daily.bat | ✅ 등록 (매일 22:00 + 23:00 재시도), 현재는 클라우드 사용 중이라 **비활성화** (중복 업로드 방지) |
 | Windows 실제 제작 | ✅ Windows 11 / Python 3.14 에서 `today` 로 영상 제작·품질 검사 통과 (2026-10-08) |
 | README / .env.example | ✅ |
+| 외부 트렌드 탐색 (위키백과 Pageviews) | ✅ 구현 + 실제 확인 (2026-10-15, 로컬: 후보 8개 조회수/증가 속도 수집, 429 대응) |
+| 외부 트렌드 탐색 (YouTube Data API mostPopular/search) | ⏳ 구현 + 테스트 완료 / 실제 연결 검증 필요 (로컬 token.json 만료) |
+| Google Trends 공식 API | ⏸ 알파(승인자만, 엔드포인트 비공개) → 어댑터 자리만, 비활성 |
+| 주제 점수 / 선정 근거 기록 (topic_scores) | ✅ 구현 + 테스트 + 실제 Gemini 후보로 확인 |
+| YouTube Analytics 성과 수집 | ⏳ 구현 + 테스트 완료 / 실제 연결 검증 필요 (`yt-analytics.readonly` 재인증 + API 사용 설정 필요) |
+| 성과 보고서 / 제작 반영 (카테고리·주제 점수·대본 프롬프트) | ✅ 구현 + 테스트 (실제 데이터는 수집 후) |
+| 대본 품질·자연스러운 루프 엔딩 / 제목 후보 3개 / 콘텐츠 검수 게이트 | ✅ 구현 + 테스트 + `test --offline` 통과 |
+| 첫 3초 Hook 효과 (FFmpeg) | ✅ 실제 렌더링 확인 (imageio-ffmpeg 7.1, 프리셋 4종, 필터 미지원/실패 시 효과 없이 렌더링) / GitHub Actions FFmpeg 는 첫 실행에서 확인 필요 |
+| 상태 DB 암호화 (`STATE_DB_KEY`) | ⏳ 구현 (openssl 왕복 로컬 확인) / Secret 등록 후 Actions 실행 확인 필요 |
 
 ## 13. 작업 내역
 
@@ -419,6 +453,11 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 
 ### 남은 작업
 
+0. 성장 엔진 활성화 (2026-10-15 추가, 14절)
+   - YouTube Analytics API 사용 설정 + OAuth 데이터 액세스에 `yt-analytics.readonly` 추가 → `auth` 재인증 → `YOUTUBE_TOKEN_JSON` 갱신 (안 하면 공개 통계만 수집)
+   - GitHub Secret `STATE_DB_KEY` 등록 (공개 저장소의 DB 에 비공개 성과 지표가 들어가므로)
+   - 첫 클라우드 실행에서 확인: `Collect YouTube performance` 단계 결과, Hook 효과 로그(`첫 장면 Hook 효과 적용`), `topic_scores`/`production_metadata` 기록
+
 1. 시각자료 보조 수단(선택): Cloudflare 무료 한도(하루 10,000 Neurons)나 장애에 대비
    - Pixabay API Key (무료, 이미 구현됨) → GitHub Secret `PIXABAY_API_KEY`
    - Hugging Face: 토큰 권한은 추가 완료, 계정 크레딧 0 이라 402 → https://huggingface.co/settings/billing 에서 충전 시 동작
@@ -427,3 +466,114 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 2. 앱 로고를 넣고 싶으면 브랜드 인증 심사 필요 (안 해도 동작에 문제 없음)
 3. macOS 의 `data/database.sqlite` 에 있는 주제(디아틀로프 고개 등)는 클라우드 DB 에 없음 → 필요하면 `pipeline-state` 브랜치 DB 에 병합
 4. 로컬에 남은 DB 쿠퍼 영상(job `20261008-173014`, rendered)은 업로드 안 됨. 올리려면 로컬에서 `upload` (클라우드 DB 에는 기록되지 않음, 그날 영상이 2개가 됨)
+
+## 14. 성장 엔진 (트렌드 · 성과 분석 · 자동 개선)
+
+목표: 영상 제작 횟수가 아니라 **실제 YouTube 성과를 저장·분석해 다음 영상의 주제·대본·편집을 조금씩 개선**하는 것.
+초기에는 설명 가능한 규칙 기반이며, 데이터가 적을 때는 아무것도 바꾸지 않습니다.
+
+```text
+외부 트렌드 탐색 → 주제 후보 → 중복·성과 분석 → 점수 → 대본(도입부·루프) → 시각 연출(첫 3초)
+→ TTS·이미지·자막·렌더링 → 품질·독창성 검수 → 업로드 → Analytics 수집 → 보고서 → 다음 제작에 반영
+```
+
+### 14.1 외부 트렌드 탐색 (`app/trends/`, `trends:`)
+
+| Provider | 데이터 | 비용/인증 | 상태 |
+|---|---|---|---|
+| `wikipedia` | ko 위키백과 전날 인기 문서(힌트), 후보 문서의 최근 30일 일별 조회수 → 관심도 + 증가 속도(최근 7일 ÷ 이전 기간) + 문서 존재(사실 확인 가능성) | 무료, Key 없음 | 기본 사용 |
+| `youtube` | `videos.list chart=mostPopular`(지역 인기 영상, 1 unit), `search.list`(최근 30일 같은 주제 영상, 100 units) → 시간당 조회수, 과밀도 | Data API 할당량 (하루 search 3회 = 300 units) | `YOUTUBE_API_KEY` 또는 token.json |
+| `google_trends` | 공식 API (알파) | 승인 필요 | 비활성 (엔드포인트·응답 형식 비공개) |
+
+- mostPopular 차트는 "지역 인기 영상 목록"일 뿐 모든 분야의 실시간 트렌드가 아닙니다. 조회수는 게시 후 경과 시간으로 나눈 **시간당 조회수**로만 봅니다.
+- 화제라도 채널 단어(`trends.channel_keywords` + 카테고리 예시)와 관련 없으면 버리고, 실제 피해자가 있는 강력 범죄·참사·정치 화제(`trends.exclude_keywords`)는 힌트로 쓰지 않습니다. 일반 인기 문서는 연예/정치 위주라 힌트가 0개인 날이 많은데 정상입니다.
+- 공개 API 로 알 수 없는 검색량·CTR·경쟁 채널 내부 지표는 만들지 않습니다(값이 없으면 NULL).
+- 모든 신호는 `trend_signals` 에 출처 URL·수집 시각·데이터 기간과 함께 저장되고, 같은 날 같은 요청은 캐시를 씁니다.
+- 실패 격리: provider 별로 오류를 잡아 그 provider 만 이번 실행에서 제외합니다(403/429/토큰 만료 즉시 제외, 위키백과는 요청 간격 1초).
+
+### 14.2 주제 점수 (`app/topics/scoring.py`, `trends.scoring`)
+
+모든 요소를 0~1 로 정규화한 뒤 가중 평균 − 패널티:
+
+```text
+base  = Σ(weight × component) / Σ(weight)        (값이 없는 요소는 빠지고 나머지로 재정규화)
+final = base − 0.15 × saturation − 0.20 × near_duplicate
+```
+
+| 요소 | 계산 | 기본 가중치 |
+|---|---|---|
+| trend | 위키백과 일평균 조회수 / YouTube 시간당 조회수 (log 정규화) × 신선도(반감기 48시간) | 0.15 |
+| velocity | 위키백과 최근 7일 ÷ 이전 기간 (1배=0, 2배 이상=1) | 0.10 |
+| channel_fit | 0.6 + 0.4 × 채널 단어 일치 | 0.15 |
+| performance | 같은 카테고리의 과거 성과 지수 (표본 부족 시 없음) | 0.10 |
+| novelty | 1 − 기존 주제와의 최대 유사도 | 0.20 |
+| story | 후보의 전개 단계(의문→배경→반전→회수) 수 | 0.15 |
+| evidence | truth_status(FACT 1.0 … FICTION 0.2) × 위키백과 문서 존재 | 0.15 |
+
+- 같은 회차에서 일부 후보만 외부 신호가 있으면, 신호가 없는 후보는 **회차 중앙값**으로 채웁니다 (결측이 유리해지지 않도록).
+- 사실 확인 가능성 < 0.5(FICTION 등) 또는 채널 관련성 < 0.35 이면 trend/velocity 를 반영하지 않습니다 → 조회수만 높은 허구/무관한 주제는 채택되지 않습니다.
+- 외부 신호가 하나도 없으면 **기존 규칙(가장 덜 비슷하고 FACT 우선)** 으로 고릅니다(`strategy: legacy`).
+- 카테고리: `topic.category_strategy: rotate_performance` — 최근 2개 카테고리는 쉬고 "오래 안 쓴 정도 60% + 성과 지수 40%". 성과 표본이 부족하면 기존 순환과 동일.
+- 선정 근거: `topic_scores` 테이블, `data/topics/<job>.json` (`selection_reasons`, `scores`, `trend_status`), 최근 사건에서 착안한 후보는 대본 프롬프트에 "날짜·출처 확인된 내용만 단정" 주의가 붙습니다.
+
+### 14.3 YouTube 성과 수집 (`app/analytics/`, `analytics:`)
+
+**권한 (필수 설정)**: 현재 token.json 은 `youtube.upload` + `youtube.readonly` 만 있어 Analytics 를 조회할 수 없습니다. 업로드는 그대로 동작합니다.
+
+1. [Google Cloud Console](https://console.cloud.google.com/apis/library/youtubeanalytics.googleapis.com) 에서 **YouTube Analytics API** 사용 설정
+2. Google 인증 플랫폼 → **데이터 액세스** 에 `https://www.googleapis.com/auth/yt-analytics.readonly` 범위 추가
+3. 로컬에서 `python -m app.main auth` → 업로드 + 읽기 + Analytics 읽기 권한을 한 번에 승인 (기존 token.json 은 `token.json.bak` 으로 백업)
+4. 새 `token.json` 내용으로 GitHub Secret `YOUTUBE_TOKEN_JSON` 갱신 → `python -m app.main analytics status` 로 확인
+
+- 토큰은 기록된 범위 그대로 갱신합니다(업로드 범위를 덮어쓰거나 없는 범위를 요청하지 않음). 권한이 없으면 Data API 공개 통계(조회/좋아요/댓글)만 저장하고(`collection_status=no_scope`) 안내를 남깁니다.
+- 수집 지표(Analytics, 게시일 하루 전~오늘 누적): views, engagedViews, estimatedMinutesWatched, averageViewDuration, averageViewPercentage, likes, comments, shares, subscribersGained, subscribersLost. `filters=video==ID` 로 영상별 조회.
+  지표 조합이 거부되면(400) 묶음별로 다시 요청하고, 그래도 실패한 지표는 `missing_metrics` 에 기록합니다.
+- Data API 공개 수치는 `public_view_count` 등 **별도 컬럼**에 저장합니다 (Analytics 값과 섞지 않음).
+- 하루 1번 수집이므로 "24시간 값"을 만들지 않습니다. `hours_since_publish` 에 실제 경과 시간을 기록하고, 보고서는 "24h 이후 첫 수집(실제 31h)"처럼 표시합니다. Analytics 는 집계가 끝난 날까지만 반환하므로 1~3일 늦을 수 있습니다.
+- 같은 영상·같은 수집일(KST)은 UPSERT → 중복 저장 없음. 영상별 실패는 격리되고 다음 실행에서 다시 수집합니다.
+- **Studio 전용 지표**(Shorts 피드 노출 수, 시청함 대 스와이프 비율)는 Analytics API 에 없습니다. Studio 에서 내보낸 CSV 를 `analytics import-csv` 로 가져온 경우에만 `studio_metrics` 에 출처(`manual_csv:파일명`)와 함께 저장·사용합니다.
+
+### 14.4 보고서와 자동 개선 (`analytics report`, `insights.py`)
+
+보고서: 영상별 성과(경과 시간, 시점별 조회수), 카테고리 / 길이 / 도입 유형 / 루프 / Hook 효과 / 제목 전략 / 시각 자료별 비교, 공유·구독이 좋았던 영상, 판단할 수 없는 항목, 개선 제안. `--format json|csv` 로 `data/reports/` 에 저장.
+
+- 비교는 같은 시점(72h 이후 첫 수집값)의 조회수와 **같은 카테고리 중앙값 대비** 평균 시청 비율로 합니다. 그룹마다 표본 수와 신뢰도(3개 미만 "판단 불가", 10개 미만 "낮음")를 표시합니다.
+- 진단: 데이터 부족 / 낮은 노출(Studio CSV 필요) / 낮은 시청 선택 비율(Studio CSV 필요) / 조회수 낮음(API 로는 노출·선택 구분 불가) / 시청 지속 낮음 / 지속 양호·공유·구독 전환 낮음 / 공유 상대적으로 높음 — 각각 개선 제안이 붙습니다.
+- 제작 반영: 판단 가능한 영상이 `analytics.min_samples`(3) 이상일 때만 ① 카테고리 성과 지수(채널 평균 쪽으로 축소, k=5) → 카테고리 선택·주제 점수 ② 도입 유형/루프/길이별 상대 성과와 신뢰도 → 주제·대본 프롬프트에 "참고용"으로 전달. 부족하면 "데이터 부족 → 기본 원칙" 으로만 전달합니다.
+
+### 14.5 대본 · 루프 엔딩 · 제목 · 검수
+
+- 대본 구조: 첫 1~3초 의문/이상 현상 → 최소 배경 → 새 단서/반전 → 처음 질문 회수. `hook_type`, `story_beats` 를 함께 생성해 성과 비교에 씁니다.
+- 추가 검증(재생성, 최대 2회): 미완성 결말(콜론/말줄임/"다음 편"), 문장 반복, FACT 가 아닌데 단정, 최근 30개 대본과 유사(≥0.55), 첫 문장 반복(≥0.7). 기존 분량/금지 표현/사실 고지 검증은 그대로입니다.
+- **자연스러운 루프 엔딩** (`script.loop_ending`): loop=true 면 마지막 문장(ending)이 사건의 핵심을 회수하면서 첫 문장과 같은 대상·시간·장소를 공유해야 합니다. 품질 점수(완결 문장 필수, 핵심어 연결 50% + 단순 반복 아님 30% + 질문으로 끝나지 않음 20%)가 0.75 미만이면 루프를 쓰지 않은 것으로 기록합니다. 루프 효과는 가정하지 않고 Analytics 로 비교합니다.
+- 제목: 핵심 미스터리 / 증거·발견 / 역설·의문 3개 후보 → 내용 일치·첫 문장 일치·길이·핵심 검색어·과장 여부·최근 제목 유사도·영어 제목 숫자 일치로 평가(CTR·검색량 추정 없음). 후보와 점수는 메타데이터 `title_selection` 에 기록. 한/영 설명의 연도가 다르면 재생성.
+- **콘텐츠 검수** (`review:`, 메타데이터 다음·업로드 전): critical = 출처 누락, 근거 없는 단정, 사실 여부 고지 누락, 장면 불일치/누락, AI 이미지 필수 위반, 최근 영상과 같은 구성(대본 유사도 ≥0.6), 미완성 결말, 라이선스 누락, AI 고지 누락 → **업로드 금지, 작업 상태 `review_needed`** (다음 `today` 는 새 주제로 진행). 사람이 확인했다면 `upload JOB --approve-review`. minor(낚시성 제목, 최근 제목과 유사)는 다른 제목 후보로 1회 자동 교체. originality_score 는 보조 지표이며 수익화 승인 예측이 아닙니다.
+
+### 14.6 첫 3초 시각 Hook (`video.hook_effect`)
+
+- 첫 Scene 클립에만 적용(자막은 나중에 합성되므로 흔들리거나 번지지 않음). 이후 장면·전환·자막·BGM 덕킹·음량 정규화는 그대로입니다.
+- 프리셋: `subtle`(약한 흔들림+대비+노이즈) / `vhs`(대비+RGB 분리+노이즈) / `glitch`(흔들림+대비+0.12초 RGB 글리치 최대 3회) / `impact`(강한 흔들림+대비) / `none`. `allow_glitch/noise/shake` 로 개별 차단.
+- 흔들림은 프레임을 약 1% 키운 뒤 잘라 움직여 테두리가 보이지 않습니다(흔들림 프리셋은 첫 장면 전체가 약 1% 확대). 빠른 점멸 반복 없음. 세기는 시간에 따라 줄어 2.5초 뒤 원래 화면.
+- 사용 중인 FFmpeg 의 `-filters` 를 확인해 없는 필터의 효과만 빼고, 렌더링이 실패하면 효과 없이 첫 장면을 다시 만듭니다. 적용 결과는 `render.hook_effect` / `production_metadata.hook_effect_preset` 에 기록.
+
+### 14.7 SQLite 스키마 추가 (마이그레이션 v1, 기존 테이블 변경 없음)
+
+| 테이블 | 용도 | 중복 방지 |
+|---|---|---|
+| `schema_migrations` | 적용된 마이그레이션 버전 | PK |
+| `video_performance_snapshots` | 영상별 성과 스냅샷 (Analytics 값 / 공개 통계 / 경과 시간 / 집계 기간 / 출처 / 상태 / 누락 지표) | UNIQUE(video, 수집일) |
+| `studio_metrics` | Studio CSV 지표 + 출처 | UNIQUE(video, metric, 기간) |
+| `trend_signals` | 트렌드 신호 + 출처/기간/신뢰도 | UNIQUE(provider, kind, keyword, region, 수집일) |
+| `topic_scores` | 후보별 점수 구성·가중치·근거 | - |
+| `production_metadata` | 영상별 제작 조건 (topic_category, topic_score, trend_sources, hook_type, story_structure, loop_ending_enabled, loop_quality_score, visual_style, hook_effect_preset, video_duration, subtitle_mode, title_strategy, script_similarity_score, originality_score) | PK(job_id) |
+
+이전 버전 DB 를 열면 자동으로 새 테이블만 추가됩니다. jobs 상태에 `review_needed` 가 추가되었습니다.
+
+### 14.8 2026-10-15 작업 내역
+
+- 실제 확인: 기존 테스트 56개 통과 확인 후 구현 → 테스트 124개 통과 (Python 3.11.17, macOS, imageio-ffmpeg 7.1), `test --offline` 으로 TTS·Whisper·렌더링(Hook 효과 subtle 적용)·품질 검사·콘텐츠 검수까지 통과
+- 실제 Gemini + 위키백과로 `topic` 실행: 처음에는 후보 문서 검색을 연달아 보내 위키백과가 429 → 요청 간격 1초, 429 시 이번 실행에서 중단, 한국어 문서 우선/후보 5개 제한으로 수정 후 429 없이 수집
+- 실제 실행에서 "외부 신호가 없는 후보가 더 높은 점수"를 받는 결측 편향 발견 → 회차 중앙값 보정
+- 위키백과 인기 문서에서 "사건" 같은 일반어 하나로 민감한 실제 사건이 관련 있다고 잡히는 문제 → 일반어 제외, `exclude_keywords` 추가
+- 로컬 macOS 의 token.json 은 만료/철회(`invalid_grant`) 상태 → YouTube Data/Analytics 실제 조회는 검증하지 못함 (영상별 실패 격리·안내는 확인)
+

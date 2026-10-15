@@ -73,7 +73,140 @@ CREATE TABLE IF NOT EXISTS step_logs (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_step_logs_job ON step_logs(job_id);
+
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version     INTEGER PRIMARY KEY,
+    name        TEXT NOT NULL,
+    applied_at  TEXT NOT NULL
+);
 """
+
+# 기존 DB(이전 버전)에도 안전하게 적용되는 순차 마이그레이션.
+# 이미 적용된 버전은 건너뛰고, 새 테이블만 추가한다 (기존 테이블/데이터는 건드리지 않음).
+MIGRATIONS: list[tuple[int, str, str]] = [
+    (1, "growth_engine", """
+-- YouTube 성과 스냅샷: 수집일(KST) 하루에 영상당 1행 (같은 날 다시 수집하면 UPSERT 로 갱신)
+-- 값이 NULL 이면 "수집하지 못함" (0 과 구분). 기간 값(report_*)은 게시일~report_end_date 누적값이다.
+CREATE TABLE IF NOT EXISTS video_performance_snapshots (
+    id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id                     TEXT,
+    youtube_video_id           TEXT NOT NULL,
+    collected_at               TEXT NOT NULL,
+    collected_date             TEXT NOT NULL,
+    published_at               TEXT,
+    hours_since_publish        REAL,
+    report_start_date          TEXT,
+    report_end_date            TEXT,
+    views                      INTEGER,
+    engaged_views              INTEGER,
+    estimated_minutes_watched  REAL,
+    average_view_duration      REAL,
+    average_view_percentage    REAL,
+    likes                      INTEGER,
+    comments                   INTEGER,
+    shares                     INTEGER,
+    subscribers_gained         INTEGER,
+    subscribers_lost           INTEGER,
+    public_view_count          INTEGER,
+    public_like_count          INTEGER,
+    public_comment_count       INTEGER,
+    duration_seconds           REAL,
+    source                     TEXT NOT NULL,
+    collection_status          TEXT NOT NULL,
+    missing_metrics            TEXT NOT NULL DEFAULT '[]',
+    error                      TEXT,
+    raw_json                   TEXT NOT NULL DEFAULT '{}',
+    UNIQUE (youtube_video_id, collected_date)
+);
+CREATE INDEX IF NOT EXISTS idx_perf_video ON video_performance_snapshots(youtube_video_id);
+CREATE INDEX IF NOT EXISTS idx_perf_job ON video_performance_snapshots(job_id);
+
+-- YouTube Studio 전용 지표 (API 미제공: 피드 노출수, 시청 선택 비율 등) - CSV/수동 가져오기만, 출처 기록 필수
+CREATE TABLE IF NOT EXISTS studio_metrics (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    youtube_video_id   TEXT NOT NULL,
+    metric             TEXT NOT NULL,
+    value              REAL NOT NULL,
+    report_start_date  TEXT NOT NULL DEFAULT '',
+    report_end_date    TEXT NOT NULL DEFAULT '',
+    source             TEXT NOT NULL,
+    imported_at        TEXT NOT NULL,
+    UNIQUE (youtube_video_id, metric, report_start_date, report_end_date)
+);
+
+-- 외부 트렌드 신호 (같은 날 같은 provider/키워드는 캐시로 재사용)
+CREATE TABLE IF NOT EXISTS trend_signals (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider             TEXT NOT NULL,
+    kind                 TEXT NOT NULL,
+    keyword              TEXT NOT NULL,
+    category             TEXT,
+    region               TEXT,
+    source_url           TEXT,
+    collected_at         TEXT NOT NULL,
+    collected_date       TEXT NOT NULL,
+    period_start         TEXT,
+    period_end           TEXT,
+    interest             REAL,
+    interest_normalized  REAL,
+    velocity             REAL,
+    video_count          INTEGER,
+    total_views          INTEGER,
+    views_per_hour       REAL,
+    published_at         TEXT,
+    related_terms        TEXT NOT NULL DEFAULT '[]',
+    confidence           REAL,
+    status               TEXT NOT NULL DEFAULT 'ok',
+    error                TEXT,
+    raw_json             TEXT NOT NULL DEFAULT '{}',
+    UNIQUE (provider, kind, keyword, region, collected_date)
+);
+CREATE INDEX IF NOT EXISTS idx_trend_date ON trend_signals(collected_date);
+
+-- 주제 후보 점수와 선정 근거
+CREATE TABLE IF NOT EXISTS topic_scores (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id        TEXT,
+    title         TEXT NOT NULL,
+    topic         TEXT NOT NULL,
+    category      TEXT NOT NULL,
+    selected      INTEGER NOT NULL DEFAULT 0,
+    duplicate     INTEGER NOT NULL DEFAULT 0,
+    final_score   REAL,
+    components    TEXT NOT NULL DEFAULT '{}',
+    weights       TEXT NOT NULL DEFAULT '{}',
+    reasons       TEXT NOT NULL DEFAULT '[]',
+    trend_sources TEXT NOT NULL DEFAULT '[]',
+    strategy      TEXT NOT NULL DEFAULT '',
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_topic_scores_job ON topic_scores(job_id);
+
+-- 영상별 제작 조건 (Analytics 성과와 연결해 어떤 조건이 좋았는지 비교)
+CREATE TABLE IF NOT EXISTS production_metadata (
+    job_id                   TEXT PRIMARY KEY,
+    youtube_video_id         TEXT,
+    topic_category           TEXT,
+    topic_score              REAL,
+    trend_sources            TEXT NOT NULL DEFAULT '[]',
+    hook_type                TEXT,
+    story_structure          TEXT,
+    loop_ending_enabled      INTEGER NOT NULL DEFAULT 0,
+    loop_quality_score       REAL,
+    visual_style             TEXT,
+    hook_effect_preset       TEXT,
+    video_duration           REAL,
+    subtitle_mode            TEXT,
+    title_strategy           TEXT,
+    script_similarity_score  REAL,
+    originality_score        REAL,
+    extra_json               TEXT NOT NULL DEFAULT '{}',
+    created_at               TEXT NOT NULL,
+    updated_at               TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_prodmeta_video ON production_metadata(youtube_video_id);
+"""),
+]
 
 
 class Database:
@@ -103,3 +236,27 @@ class Database:
     def init(self) -> None:
         with self.session() as conn:
             conn.executescript(SCHEMA)
+        self.migrate()
+
+    def schema_version(self) -> int:
+        with self.session() as conn:
+            row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
+        return int(row[0] or 0)
+
+    def migrate(self) -> list[int]:
+        """적용되지 않은 마이그레이션만 순서대로 적용한다. 반환: 이번에 적용한 버전 목록."""
+        from datetime import datetime, timezone
+
+        current = self.schema_version()
+        applied: list[int] = []
+        for version, name, sql in MIGRATIONS:
+            if version <= current:
+                continue
+            with self.session() as conn:
+                conn.executescript(sql)
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                    (version, name, datetime.now(timezone.utc).isoformat(timespec="seconds")),
+                )
+            applied.append(version)
+        return applied

@@ -3,8 +3,11 @@
 [1] DB 기존 주제 조회 → [2] Gemini 주제 후보 → [3] 중복 검사 → [4] 최종 주제
 → [5] 자료 조사 → [6] Gemini 대본 → [7] 대본 검증 → [8] Scene 생성
 → [9] Edge TTS 음성 (Scene 별 실제 길이 확정) → [10] Pexels/Pixabay 자료 수집
-→ [11] Whisper 자막 → [12] FFmpeg 영상 → [13] 품질 검사
-→ [14] Gemini 제목/설명/해시태그 → [15] YouTube 업로드 + [16] 12:00 예약 공개 → [17] SQLite 기록
+→ [11] Whisper 자막 → [12] FFmpeg 영상(첫 장면 Hook 효과 선택) → [13] 품질 검사
+→ [14] Gemini 제목 후보/설명/해시태그 → [14-1] 콘텐츠 검수(출처/독창성/라이선스, critical 이면 업로드 금지)
+→ [15] YouTube 업로드 + [16] 12:00 예약 공개 → [17] SQLite 기록 + 제작 조건(production_metadata)
+
+주제 단계는 외부 트렌드 신호와 채널 성과(Analytics)를 참고해 점수로 고르고, 둘 다 없으면 기존 방식으로 고른다.
 
 각 단계 결과는 DB(jobs.state_json)와 data/, output/ 에 저장되므로
 실패한 작업은 `python -m app.main retry` 로 실패한 단계부터 다시 실행된다.
@@ -14,6 +17,7 @@ from __future__ import annotations
 
 import time
 import traceback
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -30,8 +34,12 @@ from app.assets.audio_library import AudioLibrary
 from app.config.settings import Settings
 from app.database.db import Database
 from app.database.models import JobRecord, JobStatus, TopicStatus
-from app.database.repositories import AssetRepository, JobRepository, StepLogRepository, TopicRepository
+from app.database.repositories import (
+    AssetRepository, JobRepository, ProductionMetadataRepository, StepLogRepository, TopicRepository,
+    TopicScoreRepository, TrendRepository,
+)
 from app.quality.checker import QualityChecker
+from app.quality.content_checker import fix_title, review_content
 from app.research.researcher import Researcher
 from app.schemas import (
     AssetInfo, AudioTrackInfo, ResearchNotes, SceneTiming, ScriptDraft, ShortsContent, SubtitleChunk,
@@ -51,11 +59,18 @@ from app.youtube.uploader import YouTubeUploader, plan_publish
 
 logger = get_logger("pipeline")
 
-STEPS = ["topic", "research", "script", "scenes", "voice", "assets", "subtitles", "render", "quality", "metadata", "upload", "record"]
+STEPS = [
+    "topic", "research", "script", "scenes", "voice", "assets", "subtitles", "render", "quality", "metadata", "review",
+    "upload", "record",
+]
 
 
 class QualityCheckFailed(NonRetryableError):
     pass
+
+
+class ContentReviewFailed(NonRetryableError):
+    """콘텐츠 검수 critical 문제 → 업로드 금지, 작업은 review_needed 로 저장."""
 
 
 @dataclass
@@ -91,7 +106,10 @@ class DailyPipeline:
         self.jobs = JobRepository(self.db, tz)
         self.assets_repo = AssetRepository(self.db)
         self.step_logs = StepLogRepository(self.db, tz)
+        self.score_repo = TopicScoreRepository(self.db, tz)
+        self.prod_repo = ProductionMetadataRepository(self.db, tz)
         self._gemini: GeminiClient | None = None
+        self._insights = None
         self.options = RunOptions()
 
     # ----------------------------------------------------------- helpers
@@ -130,6 +148,43 @@ class DailyPipeline:
     def _mood(self, ctx: JobContext) -> str:
         category = self.settings.category(ctx.state.get("topic", {}).get("category", ""))
         return category.bgm_mood if category else "dark"
+
+    @property
+    def insights(self):
+        """채널 성과 요약 (Analytics 수집 결과). 없거나 실패하면 반영하지 않는다."""
+        if self._insights is None and not self.options.offline and self.settings.analytics.enabled:
+            from app.analytics.insights import PerformanceInsights
+
+            self._insights = PerformanceInsights(self.db, self.settings)
+        return self._insights
+
+    def _performance_context(self, category: str) -> str:
+        try:
+            return self.insights.prompt_context(category) if self.insights else ""
+        except Exception as exc:
+            logger.warning("성과 요약 실패 → 프롬프트에 넣지 않음: %s", exc)
+            return ""
+
+    def _previous(self, ctx: JobContext) -> list[dict]:
+        """최근 제작물 (대본/제목/도입 유사도 비교용). offline 샘플과 현재 작업은 제외."""
+        limit = self.settings.script.quality.compare_recent
+        out: list[dict] = []
+        for job in self.jobs.list(limit + 20):
+            state = job.state or {}
+            if job.id == ctx.id or state.get("options", {}).get("offline"):
+                continue
+            content, draft = state.get("content") or {}, state.get("draft") or {}
+            script = content.get("script") or draft.get("script")
+            if not script:
+                continue
+            out.append({
+                "job_id": job.id,
+                "title": (state.get("metadata") or {}).get("title") or content.get("title") or draft.get("title", ""),
+                "hook": content.get("hook") or draft.get("hook", ""),
+                "script": script,
+                "hook_type": draft.get("hook_type", ""),
+            })
+        return out[:limit]
 
     # --------------------------------------------------------------- run
     def run_new(self, options: RunOptions) -> JobContext:
@@ -200,7 +255,8 @@ class DailyPipeline:
         step = ctx.current or "?"
         logger.error("Pipeline FAILED | STEP=%s | EXCEPTION=%s: %s", step, type(exc).__name__, exc)
         logger.debug(traceback.format_exc())
-        self.jobs.update(ctx.id, status=JobStatus.FAILED, error=f"[{step}] {type(exc).__name__}: {exc}"[:2000])
+        status = JobStatus.REVIEW_NEEDED if isinstance(exc, ContentReviewFailed) else JobStatus.FAILED
+        self.jobs.update(ctx.id, status=status, error=f"[{step}] {type(exc).__name__}: {exc}"[:2000])
         self.step_logs.add(ctx.id, str(step), "failed", f"{type(exc).__name__}: {exc}")
         if ctx.state.get("topic_id"):
             self.topics.update(ctx.state["topic_id"], status=TopicStatus.FAILED)
@@ -229,15 +285,35 @@ class DailyPipeline:
             )
             selection = {"selected": candidate.model_dump(), "forced": True}
         else:
+            trends = None
+            if self.settings.trends.enabled:
+                try:
+                    from app.trends.collector import TrendCollector
+
+                    trends = TrendCollector(self.settings, TrendRepository(self.db))
+                except Exception as exc:  # 외부 신호는 보조 기능
+                    logger.warning("트렌드 수집기 준비 실패 → 기존 방식으로 주제 선정: %s", exc)
             selector = TopicSelector(
                 self.settings,
                 TopicGenerator(self.gemini, self.settings),
                 DuplicateChecker(self.settings.duplicate, self.gemini),
                 self.topics,
+                trends=trends,
+                insights=self.insights,
             )
             result = selector.select(self.options.forced_category)
             candidate = result.selected
             selection = result.to_dict()
+            sel = result.selected_score
+            ctx.state["topic_selection"] = {
+                "strategy": result.strategy, "score": round(sel.final, 4) if sel else None,
+                "trend_sources": sel.trend_sources if sel else [], "reasons": sel.reasons if sel else [],
+                "category_reason": result.category_reason, "trend_status": result.trend_status,
+            }
+            try:
+                self.score_repo.add_many(ctx.id, [s.to_row() for s in result.scores], result.strategy)
+            except Exception as exc:
+                logger.warning("주제 점수 기록 실패: %s", exc)
 
         topic_id = self.topics.add(candidate, job_id=ctx.id, status=TopicStatus.SELECTED)
         self.jobs.update(ctx.id, topic_id=topic_id)
@@ -260,7 +336,11 @@ class DailyPipeline:
             fx = self._fixture()["content"]
             draft = ScriptDraft(**{k: fx[k] for k in ScriptDraft.model_fields if k in fx})
         else:
-            draft = ScriptGenerator(self.gemini, self.settings).generate(self._candidate(ctx), self._research(ctx))
+            candidate = self._candidate(ctx)
+            draft = ScriptGenerator(self.gemini, self.settings).generate(
+                candidate, self._research(ctx), previous=self._previous(ctx),
+                performance_context=self._performance_context(candidate.category),
+            )
         ctx.state["draft"] = draft.model_dump()
 
     def step_scenes(self, ctx: JobContext) -> None:
@@ -375,7 +455,7 @@ class DailyPipeline:
             return renderer.render(
                 content.scenes, self._assets(ctx), self._timings(ctx), Path(ctx.state["narration"]["path"]),
                 ctx.state["narration"]["duration"], chunks, bgm, content.title, out, self.work_dir(ctx),
-                thumbnail_path=self.paths.thumbnails / f"{ctx.id}.jpg",
+                thumbnail_path=self.paths.thumbnails / f"{ctx.id}.jpg", hook_seed=ctx.id,
             )
 
         result = retry_call(_render, step="FFmpeg Render", max_attempts=2, delays=self.settings.retry.delays)
@@ -383,6 +463,7 @@ class DailyPipeline:
             "video_path": str(result.video_path), "duration": result.duration,
             "thumbnail": str(result.thumbnail_path) if result.thumbnail_path else None,
             "bgm": bgm.model_dump() if bgm else None, "sfx": result.sfx_used,
+            "hook_effect": result.hook_effect,
         }
         self.jobs.update(ctx.id, video_path=str(result.video_path))
 
@@ -408,14 +489,70 @@ class DailyPipeline:
                 content, research, assets, bgm,
             )
         else:
-            meta = MetadataGenerator(self.gemini, self.settings).generate(content, research, assets, bgm)
+            previous_titles = [p["title"] for p in self._previous(ctx) if p["title"]]
+            meta = MetadataGenerator(self.gemini, self.settings).generate(content, research, assets, bgm, previous_titles)
         ctx.state["metadata"] = meta.model_dump()
         content.description, content.hashtags = meta.description, meta.hashtags
         ctx.state["content"] = content.model_dump()
 
+    def step_review(self, ctx: JobContext) -> None:
+        cfg = self.settings.review
+        previous_state = ctx.state.get("review") or {}
+        approved = bool(previous_state.get("approved_by_user"))
+        if not cfg.enabled:
+            ctx.state["review"] = {"status": "skipped", "passed": True, "issues": []}
+            return
+        content = self._content(ctx)
+        meta = VideoMetadata(**ctx.state["metadata"])
+        previous = self._previous(ctx)
+        previous_titles = [p["title"] for p in previous if p["title"]]
+        draft = ctx.state.get("draft") or {}
+
+        def _review():
+            return review_content(self.settings, content, meta, self._research(ctx), self._assets(ctx), self._bgm(ctx),
+                                  previous, hook_type=draft.get("hook_type", ""), offline=self.options.offline)
+
+        report = _review()
+        fixes: list[str] = []
+        for _ in range(cfg.max_fix_attempts):
+            if not report.fixable:
+                break
+            new_title = fix_title(meta, report.issues, previous_titles, self.settings)
+            if not new_title:
+                break
+            old = meta.title
+            cand = next((c for c in meta.title_selection if c.get("title") == new_title), {})
+            if cand.get("title_en") and meta.title_en:
+                meta.description = meta.description.replace(meta.title_en, cand["title_en"], 1)
+                meta.title_en = cand["title_en"]
+            meta.title, meta.title_strategy = new_title, cand.get("strategy", meta.title_strategy)
+            fixes.append(f"제목 변경: {old} → {new_title}")
+            report = _review()
+        report.fixes = fixes
+        report.approved_by_user = approved
+        ctx.state["metadata"] = meta.model_dump()
+        ctx.state["review"] = report.to_dict()
+        for issue in report.issues:
+            log = logger.error if issue.severity == "critical" else logger.warning if issue.severity == "minor" else logger.info
+            log("콘텐츠 검수 [%s] %s: %s", issue.severity, issue.code, issue.message)
+        logger.info("콘텐츠 검수: %s (독창성 보조 지표 %.2f, 최근 대본 최대 유사도 %.2f)", report.status,
+                    report.originality_score, report.script_similarity)
+        if report.critical:
+            if approved:
+                logger.warning("critical 문제가 있지만 사용자가 승인함 (upload --approve-review) → 진행")
+                ctx.state["review"]["passed"] = True
+                return
+            self._save(ctx, "review")
+            raise ContentReviewFailed(
+                "콘텐츠 검수 실패 → 업로드 금지 (검토 필요): " + "; ".join(i.message for i in report.critical)
+                + f" | 확인 후 진행하려면: python -m app.main upload {ctx.id} --approve-review"
+            )
+
     def step_upload(self, ctx: JobContext) -> None:
         if not ctx.state.get("quality", {}).get("passed"):
             raise QualityCheckFailed("품질 검사를 통과하지 않은 영상은 업로드할 수 없습니다")
+        if self.settings.review.enabled and not (ctx.state.get("review") or {}).get("passed"):
+            raise ContentReviewFailed("콘텐츠 검수를 통과하지 않은 영상은 업로드할 수 없습니다")
         meta = VideoMetadata(**ctx.state["metadata"])
         plan = plan_publish(self.settings)
         result = YouTubeUploader(self.settings).upload(Path(ctx.state["render"]["video_path"]), meta, plan)
@@ -459,6 +596,9 @@ class DailyPipeline:
             "youtube_url": upload.get("url", ""),
             "status": "success" if upload else "rendered",
         }
+        record["production"] = self._record_production(ctx, content, upload, meta)
+        record["topic_selection"] = ctx.state.get("topic_selection")
+        record["review"] = ctx.state.get("review")
         write_json(self.paths.metadata / f"{ctx.id}.json", record)
 
         uploaded = bool(upload)
@@ -471,6 +611,47 @@ class DailyPipeline:
         if self.settings.app.cleanup_work_files and final_status == JobStatus.SUCCESS:
             remove_dir(self.work_dir(ctx))
         logger.info("제작 이력 저장: %s (%s)", record["title"], record["youtube_url"] or record["video_path"])
+
+    def _record_production(self, ctx: JobContext, content: ShortsContent, upload: dict, meta: dict) -> dict:
+        """영상별 제작 조건 저장 (Analytics 성과와 연결해 비교). 실패해도 작업은 성공으로 둔다."""
+        fields = _production_fields(self.settings, ctx.state, content, upload, meta)
+        try:
+            self.prod_repo.upsert(ctx.id, **fields)
+        except Exception as exc:
+            logger.warning("제작 조건 기록 실패: %s", exc)
+        return fields
+
+
+def _production_fields(settings: Settings, state: dict, content: ShortsContent, upload: dict, meta: dict) -> dict:
+    draft = state.get("draft") or {}
+    sel = state.get("topic_selection") or {}
+    render = state.get("render") or {}
+    hook = render.get("hook_effect") or {}
+    review = state.get("review") or {}
+    sources = Counter(a.get("source", "") for a in state.get("assets", []))
+    chunks = (state.get("subtitles") or {}).get("chunks") or []
+    return {
+        "youtube_video_id": upload.get("video_id") or None,
+        "topic_category": content.category,
+        "topic_score": sel.get("score"),
+        "trend_sources": sel.get("trend_sources") or [],
+        "hook_type": draft.get("hook_type") or "other",
+        "story_structure": " → ".join(draft.get("story_beats") or []),
+        "loop_ending_enabled": bool(draft.get("loop")),
+        "loop_quality_score": draft.get("loop_quality"),
+        "visual_style": sources.most_common(1)[0][0] if sources else "unknown",
+        "hook_effect_preset": hook.get("preset") if hook.get("applied") else "none",
+        "video_duration": render.get("duration"),
+        "subtitle_mode": "ko+en" if any(c.get("text_en") for c in chunks) else "ko",
+        "title_strategy": meta.get("title_strategy") or "default",
+        "script_similarity_score": draft.get("script_similarity"),
+        "originality_score": review.get("originality_score"),
+        "extra_json": {
+            "visual_sources": dict(sources), "ai_style": settings.assets.ai_image.style,
+            "loop_note": draft.get("loop_note"), "hook_effect": hook, "topic_strategy": sel.get("strategy"),
+            "review_issues": [i.get("code") for i in review.get("issues", [])],
+        },
+    }
 
 
 def today_start_iso(settings: Settings) -> str:

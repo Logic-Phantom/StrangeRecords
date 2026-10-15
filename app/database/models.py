@@ -21,6 +21,7 @@ class JobStatus:
     FAILED = "failed"
     RENDERED = "rendered"      # 품질 검사 통과, 업로드 대기
     SUCCESS = "success"        # 업로드(또는 test 모드 제작) 완료
+    REVIEW_NEEDED = "review_needed"  # 콘텐츠 검수 critical 문제 → 업로드 금지, 사람 확인 필요 (today 가 자동 재개하지 않음)
 
 
 @dataclass

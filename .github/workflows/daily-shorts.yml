@@ -8,8 +8,13 @@
 #   CLOUDFLARE_ACCOUNT_ID / CLOUDFLARE_API_TOKEN (권장) Gemini 이미지 실패 시 무료 AI 이미지
 #   HF_API_KEY          (선택) Hugging Face 대체 이미지 (크레딧 필요)
 #   PEXELS_API_KEY / PIXABAY_API_KEY (선택)
+#   YOUTUBE_API_KEY     (선택) 트렌드 탐색용 YouTube Data API Key (없으면 YOUTUBE_TOKEN_JSON 으로 조회)
+#   STATE_DB_KEY        (권장) pipeline-state 브랜치의 DB 를 AES-256 으로 암호화하는 비밀번호.
+#                       공개 저장소에서는 DB 에 들어가는 YouTube Analytics 성과(비공개 지표)가 누구에게나 보이므로 설정 권장
+#   GOOGLE_TRENDS_API_KEY (선택) Google Trends 공식 API 알파 승인 시에만
 #
-# 주제 중복 방지/하루 1개 정책에 쓰는 SQLite DB 는 pipeline-state 브랜치에 저장해 다음 실행에 이어 쓴다.
+# 주제 중복 방지/하루 1개 정책/성과 이력에 쓰는 SQLite DB 는 pipeline-state 브랜치에 저장해 다음 실행에 이어 쓴다.
+# 실행 순서: DB 복원 → (보조) 이전 영상 성과 수집 → 오늘 영상 제작(트렌드·성과 반영 주제 선정 → 제작 → 검수) → 업로드 → DB 저장
 # =====================================================================
 name: Daily Shorts
 
@@ -53,6 +58,9 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
       PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+      YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+      GOOGLE_TRENDS_API_KEY: ${{ secrets.GOOGLE_TRENDS_API_KEY }}
+      STATE_DB_KEY: ${{ secrets.STATE_DB_KEY }}
       COMMAND: ${{ inputs.command || 'today' }}
       REMAKE_JOB: ${{ inputs.job }}
       REMAKE_FROM: ${{ inputs.from_step || 'voice' }}
@@ -87,7 +95,12 @@ jobs:
           YOUTUBE_TOKEN_JSON: ${{ secrets.YOUTUBE_TOKEN_JSON }}
         run: |
           mkdir -p data
-          if [ -f .state/database.sqlite ]; then cp .state/database.sqlite data/database.sqlite; fi
+          if [ -f .state/database.sqlite.enc ]; then
+            if [ -z "$STATE_DB_KEY" ]; then echo "::error::암호화된 DB 가 있는데 STATE_DB_KEY secret 이 없습니다"; exit 1; fi
+            openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 -pass env:STATE_DB_KEY -in .state/database.sqlite.enc -out data/database.sqlite
+          elif [ -f .state/database.sqlite ]; then
+            cp .state/database.sqlite data/database.sqlite
+          fi
           if [ -z "$GEMINI_API_KEY" ]; then echo "::error::GEMINI_API_KEY secret 이 없습니다"; exit 1; fi
           if [ -n "$YOUTUBE_TOKEN_JSON" ]; then
             printf '%s' "$YOUTUBE_TOKEN_JSON" > token.json
@@ -96,6 +109,13 @@ jobs:
           fi
           python -m app.main setup
           python -m app.main doctor || true
+
+      # 보조 기능: 실패해도(권한 없음, API 오류) 영상 제작/업로드는 계속한다. 성과 수치는 로그에 출력하지 않는다.
+      - name: Collect YouTube performance (optional)
+        if: env.COMMAND != 'test'
+        continue-on-error: true
+        timeout-minutes: 10
+        run: python -m app.main analytics sync
 
       - name: Make video (and upload)
         run: |
@@ -126,11 +146,20 @@ jobs:
         if: always()
         run: |
           [ -f data/database.sqlite ] || exit 0
-          cp data/database.sqlite .state/database.sqlite
+          if [ -n "$STATE_DB_KEY" ]; then
+            # 공개 저장소에서도 성과/제작 이력이 보이지 않도록 암호화해서 저장 (평문 DB 는 브랜치에서 제거)
+            openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -pass env:STATE_DB_KEY -in data/database.sqlite -out .state/database.sqlite.enc
+            git -C .state rm -q --cached --ignore-unmatch database.sqlite
+            rm -f .state/database.sqlite
+          else
+            cp data/database.sqlite .state/database.sqlite
+            git -C .state rm -q --cached --ignore-unmatch database.sqlite.enc
+            rm -f .state/database.sqlite.enc
+          fi
           cd .state
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add database.sqlite
+          git add -A database.sqlite*
           git diff --cached --quiet || git commit -q -m "state: $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M') (run ${{ github.run_id }})"
           git push -q origin HEAD:pipeline-state
 

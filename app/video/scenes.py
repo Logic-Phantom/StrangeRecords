@@ -47,16 +47,19 @@ def image_filter(effect: str, duration: float, cfg: VideoConfig, seed: str = "")
     return f"{pre},zoompan=z='{zexpr}':x='{x}':y='{y}':d={frames}:s={w}x{h}:fps={fps},setsar=1"
 
 
-def build_scene_clip(asset: AssetInfo, duration: float, effect: str, out: Path, cfg: VideoConfig) -> Path:
+def build_scene_clip(asset: AssetInfo, duration: float, effect: str, out: Path, cfg: VideoConfig,
+                     extra_filter: str = "") -> Path:
+    """extra_filter: 첫 장면 Hook 효과처럼 1080x1920 결과 위에 덧붙이는 필터 (hook_effect.build_hook_effect 가 만든 값만)."""
     w, h, fps = cfg.width, cfg.height, cfg.fps
     duration = max(duration, 0.5)
     encode = ["-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "16", "-pix_fmt", "yuv420p", "-r", str(fps)]
+    extra = f",{extra_filter}" if extra_filter else ""
 
     if asset.media_type == "video":
         src_duration = asset.duration or media_duration(asset.local_path)
         # 앞부분(인트로/로고)을 살짝 건너뛰되 장면 길이는 확보
         offset = min(1.0, max(0.0, (src_duration - duration) / 3)) if src_duration > duration else 0.0
-        vf = f"{_cover(w, h)},setsar=1,fps={fps},format=yuv420p"
+        vf = f"{_cover(w, h)},setsar=1,fps={fps}{extra},format=yuv420p"
         loop = ["-stream_loop", "-1"] if src_duration < duration + offset else []
         run_ffmpeg(
             [*loop, "-ss", f"{offset:.2f}", "-i", asset.local_path, "-t", f"{duration:.3f}", "-vf", vf, *encode, str(out)],
@@ -65,7 +68,7 @@ def build_scene_clip(asset: AssetInfo, duration: float, effect: str, out: Path, 
     else:
         if effect in ("auto", "", None):
             effect = random.Random(asset.local_path).choice(IMAGE_EFFECTS)
-        vf = image_filter(effect, duration, cfg) + ",format=yuv420p"
+        vf = image_filter(effect, duration, cfg) + f"{extra},format=yuv420p"
         # zoompan 은 한 장에서 d 프레임을 생성, static 은 이미지를 반복 입력
         loop = ["-loop", "1", "-framerate", str(fps)] if effect == "static" else []
         run_ffmpeg(
