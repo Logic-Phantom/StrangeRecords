@@ -366,6 +366,66 @@ class ProductionMetadataRepository:
             return [_row_dict(r) for r in conn.execute("SELECT * FROM production_metadata").fetchall()]
 
 
+class CommentRepository:
+    """video_comments: 영상당 자동 댓글 1행 (등록 상태와 고정 상태를 따로 기록)."""
+
+    COLUMNS = (
+        "job_id", "comment_text", "comment_type", "generator", "comment_id", "status", "attempts", "error_code",
+        "error_message", "generated_at", "posted_at", "last_attempt_at", "pin_status", "pin_recorded_at", "pin_note",
+        "extra_json",
+    )
+
+    def __init__(self, db: Database, tz: str = "Asia/Seoul"):
+        self.db = db
+        self.tz = tz
+
+    def get(self, video_id: str) -> dict[str, Any] | None:
+        with self.db.session() as conn:
+            row = conn.execute("SELECT * FROM video_comments WHERE youtube_video_id = ?", (video_id,)).fetchone()
+        return _row_dict(row) if row else None
+
+    def for_job(self, job_id: str) -> list[dict[str, Any]]:
+        with self.db.session() as conn:
+            rows = conn.execute("SELECT * FROM video_comments WHERE job_id = ? ORDER BY id DESC", (job_id,)).fetchall()
+        return [_row_dict(r) for r in rows]
+
+    def upsert(self, video_id: str, **fields: Any) -> None:
+        data = {k: v for k, v in fields.items() if k in self.COLUMNS}
+        if "extra_json" in data:
+            data["extra_json"] = json.dumps(data["extra_json"] or {}, ensure_ascii=False, default=str)
+        now = now_iso(self.tz)
+        cols = ["youtube_video_id", *data, "created_at", "updated_at"]
+        updates = ", ".join(f"{c} = excluded.{c}" for c in [*data, "updated_at"])
+        with self.db.session() as conn:
+            conn.execute(
+                f"INSERT INTO video_comments ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))}) "
+                f"ON CONFLICT(youtube_video_id) DO UPDATE SET {updates}",
+                (video_id, *data.values(), now, now),
+            )
+
+    def list(self, statuses: Iterable[str] | None = None, pin_statuses: Iterable[str] | None = None,
+             limit: int = 50) -> list[dict[str, Any]]:
+        query, params, where = "SELECT * FROM video_comments", [], []
+        for column, values in (("status", list(statuses or [])), ("pin_status", list(pin_statuses or []))):
+            if values:
+                where.append(f"{column} IN ({','.join('?' * len(values))})")
+                params += values
+        if where:
+            query += " WHERE " + " AND ".join(where)
+        query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        with self.db.session() as conn:
+            return [_row_dict(r) for r in conn.execute(query, (*params, limit)).fetchall()]
+
+    def texts(self, exclude_video: str | None = None, limit: int = 30) -> list[str]:
+        """이전 자동 댓글 본문 (반복 댓글 방지용)."""
+        with self.db.session() as conn:
+            rows = conn.execute(
+                "SELECT comment_text FROM video_comments WHERE comment_text != '' AND youtube_video_id != ? "
+                "ORDER BY id DESC LIMIT ?", (exclude_video or "", limit),
+            ).fetchall()
+        return [r["comment_text"] for r in rows]
+
+
 def uploaded_jobs(db: Database, since_iso: str | None = None) -> list[JobRecord]:
     """YouTube 에 올라간 작업 (성과 수집 대상)."""
     query = "SELECT * FROM jobs WHERE youtube_video_id IS NOT NULL AND youtube_video_id != ''"

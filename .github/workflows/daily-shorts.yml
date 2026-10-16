@@ -117,6 +117,14 @@ jobs:
         timeout-minutes: 10
         run: python -m app.main analytics sync
 
+      # 보조 기능: 이전 실행에서 예약/비공개라 대기 중이거나 일시 오류로 실패한 자동 댓글을 재시도한다 (comments.enabled 일 때만).
+      # 같은 본문을 재사용하고 등록 전에 기존 댓글을 확인하므로 중복 댓글이 생기지 않는다. 실패해도 제작/업로드는 계속.
+      - name: Retry pending comments (optional)
+        if: env.COMMAND != 'test'
+        continue-on-error: true
+        timeout-minutes: 5
+        run: python -m app.main comments retry
+
       - name: Make video (and upload)
         run: |
           if [ "$COMMAND" = "test" ]; then
@@ -152,6 +160,7 @@ jobs:
             git -C .state rm -q --cached --ignore-unmatch database.sqlite
             rm -f .state/database.sqlite
           else
+            echo "::warning::STATE_DB_KEY 가 없어 DB 를 평문으로 공개 저장소(pipeline-state)에 저장합니다 (성과 지표·댓글 기록 포함). Secret 등록을 권장합니다."
             cp data/database.sqlite .state/database.sqlite
             git -C .state rm -q --cached --ignore-unmatch database.sqlite.enc
             rm -f .state/database.sqlite.enc

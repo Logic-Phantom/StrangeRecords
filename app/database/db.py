@@ -206,6 +206,35 @@ CREATE TABLE IF NOT EXISTS production_metadata (
 );
 CREATE INDEX IF NOT EXISTS idx_prodmeta_video ON production_metadata(youtube_video_id);
 """),
+    (2, "video_comments", """
+-- 영상별 자동 댓글 (영상당 1행 → 같은 영상에 두 번 등록하지 않음)
+-- status: pending | waiting_publish | posted | failed | permission_denied | rejected | skipped
+-- pin_status: not_applicable(등록 전) | manual_required(API 미지원, 사람이 고정 필요) | pinned_manual(사람이 고정했다고 기록) | unknown(확인 불가)
+CREATE TABLE IF NOT EXISTS video_comments (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id            TEXT,
+    youtube_video_id  TEXT NOT NULL UNIQUE,
+    comment_text      TEXT NOT NULL DEFAULT '',
+    comment_type      TEXT NOT NULL DEFAULT '',
+    generator         TEXT NOT NULL DEFAULT '',
+    comment_id        TEXT,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    error_code        TEXT,
+    error_message     TEXT,
+    generated_at      TEXT,
+    posted_at         TEXT,
+    last_attempt_at   TEXT,
+    pin_status        TEXT NOT NULL DEFAULT 'not_applicable',
+    pin_recorded_at   TEXT,
+    pin_note          TEXT,
+    extra_json        TEXT NOT NULL DEFAULT '{}',
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_comments_job ON video_comments(job_id);
+CREATE INDEX IF NOT EXISTS idx_comments_status ON video_comments(status);
+"""),
 ]
 
 

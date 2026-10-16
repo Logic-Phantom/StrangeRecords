@@ -12,6 +12,7 @@ TRUTH_STATUSES: tuple[str, ...] = ("FACT", "UNCONFIRMED", "LEGEND", "URBAN_LEGEN
 SFX_NAMES: tuple[str, ...] = ("heartbeat", "impact", "whoosh", "suspense", "click", "transition")
 EFFECTS: tuple[str, ...] = ("auto", "zoom_in", "zoom_out", "pan_left", "pan_right", "pan_up", "pan_down", "static")
 HOOK_TYPES: tuple[str, ...] = ("question", "anomaly", "contradiction", "number", "direct_address", "other")
+STORY_FORMATS: tuple[str, ...] = ("classic", "timeline", "evidence", "two_hypotheses", "record", "science_vs_legend")
 
 
 def _normalize_truth(value: object) -> object:
@@ -87,6 +88,66 @@ class ResearchNotes(BaseModel):
 
 
 # ---------------------------------------------------------------- script
+class Hypothesis(BaseModel):
+    name: str
+    evidence: str = ""          # 이 가설을 뒷받침하는 근거
+    weakness: str = ""          # 이 가설의 약점/반론
+
+
+class TimelineEvent(BaseModel):
+    when: str
+    what: str
+
+
+class Explainer(BaseModel):
+    """영상마다 다른 '고유한 설명'의 구조화 데이터 (대본과 함께 생성, 정보 카드·댓글·검수에 사용).
+
+    이전 버전 작업/fixture 에는 없으므로 모든 항목은 비어 있어도 된다.
+    """
+
+    confirmed_facts: list[str] = Field(default_factory=list)      # 자료로 확인된 핵심 사실 (짧은 구절)
+    unconfirmed_claims: list[str] = Field(default_factory=list)   # 미확인 정보·전설·추측
+    key_clues: list[str] = Field(default_factory=list)            # 사건 이해에 중요한 단서
+    hypotheses: list[Hypothesis] = Field(default_factory=list)    # 영상에서 실제로 소개한 가설
+    unresolved: list[str] = Field(default_factory=list)           # 현재 자료로 확정할 수 없는 부분
+    timeline: list[TimelineEvent] = Field(default_factory=list)
+    source_agreement: str = ""                                    # 출처 간 일치/불일치
+    unique_insight: str = ""                                      # 이 영상이 주는 고유한 설명/결론
+
+    @field_validator("confirmed_facts", "unconfirmed_claims", "key_clues", "unresolved", mode="before")
+    @classmethod
+    def _str_list(cls, value: object) -> object:
+        # Gemini 가 문자열 하나나 {"text": ...} 형태로 줘도 재요청하지 않고 받아들인다
+        if isinstance(value, str):
+            value = [value]
+        if isinstance(value, list):
+            out = []
+            for item in value:
+                if isinstance(item, dict):
+                    item = next((str(v) for v in item.values() if isinstance(v, str) and v.strip()), "")
+                if isinstance(item, str) and item.strip():
+                    out.append(item.strip())
+            return out
+        return []
+
+    @field_validator("hypotheses", mode="before")
+    @classmethod
+    def _hypotheses(cls, value: object) -> object:
+        if not isinstance(value, list):
+            return []
+        return [{"name": v} if isinstance(v, str) else v for v in value if v]
+
+    @field_validator("timeline", mode="before")
+    @classmethod
+    def _timeline(cls, value: object) -> object:
+        if not isinstance(value, list):
+            return []
+        return [{"when": "", "what": v} if isinstance(v, str) else v for v in value if v]
+
+    def is_empty(self) -> bool:
+        return not (self.confirmed_facts or self.key_clues or self.hypotheses or self.unique_insight)
+
+
 class ScriptDraft(BaseModel):
     title: str
     hook: str
@@ -100,6 +161,9 @@ class ScriptDraft(BaseModel):
     hook_type: str = "other"
     # 정보 전개 단계 (각 단계마다 새 정보): 예) ["의문", "배경", "단서", "반전", "회수"]
     story_beats: list[str] = Field(default_factory=list)
+    # 전개 형식 (app/ai/story_format.py): classic | timeline | evidence | two_hypotheses | record | science_vs_legend
+    story_format: str = "classic"
+    explainer: Explainer = Field(default_factory=Explainer)
     # 시스템이 계산해서 채우는 값 (Gemini 출력 아님)
     loop_quality: float | None = None
     loop_note: str = ""
@@ -113,6 +177,18 @@ class ScriptDraft(BaseModel):
         if not isinstance(value, str) or value.strip().lower() not in HOOK_TYPES:
             return "other"
         return value.strip().lower()
+
+    @field_validator("story_format", mode="before")
+    @classmethod
+    def _story_format(cls, value: object) -> object:
+        if not isinstance(value, str) or value.strip().lower() not in STORY_FORMATS:
+            return "classic"
+        return value.strip().lower()
+
+    @field_validator("explainer", mode="before")
+    @classmethod
+    def _explainer(cls, value: object) -> object:
+        return value if isinstance(value, (dict, Explainer)) else {}
 
 
 class Scene(BaseModel):

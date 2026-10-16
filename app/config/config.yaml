@@ -188,6 +188,13 @@ voice:
   endpoints: ["msedgeservices", "bing"]
   min_interval: 2.5            # 새 주소는 연속 요청에 429 → 요청 사이 최소 간격(초, 실측 2초 이상이면 통과)
   rate_limit_waits: [5, 10, 20, 30, 45]   # 429 를 받으면 차례로 기다렸다가 다시 요청
+  # 합성 음성의 상업적 이용 권리 상태 (python -m app.main rights 로 점검)
+  # edge-tts 라이브러리(오픈소스 코드)의 라이선스와 Microsoft 음성 서비스의 이용 조건은 별개다.
+  # edge-tts 는 Edge 브라우저 '소리 내어 읽기'용 비공개 엔드포인트를 쓰며, 그 출력물의 상업적 이용을 허용한다는
+  # 공개 약관/서면 답변은 확인되지 않았다 → unverified. 확인되면 rights_evidence 에 근거를 적고 verified 로 직접 바꾼다.
+  rights_status: "unverified"     # unverified | verified | restricted
+  rights_evidence: ""             # 약관 URL·서면 답변 보관 위치 (verified 일 때 필수)
+  rights_checked_at: ""           # 마지막으로 확인한 날짜 (YYYY-MM-DD)
 
 # ---------------------------------------------------------------------
 # 시각자료
@@ -307,6 +314,17 @@ video:
     allow_noise: true
     allow_shake: true
     deterministic_seed: true   # 같은 작업은 같은 흔들림/글리치 위치 (재렌더링해도 동일)
+  # 대본의 확인된 사실/미확인 주장, 가설 비교, 타임라인을 정보 카드로 표시 (자료 조사로 확인된 항목만 카드에 넣음)
+  info_cards:
+    enabled: true
+    max_cards: 2               # 영상당 최대 카드 수 (첫 장면·마지막 장면에는 넣지 않음)
+    position_y: 0.22
+    max_items: 4
+  # AI 생성 이미지가 실제 촬영 기록으로 오해되지 않도록 화면 왼쪽 위에 작게 표시 (AI 이미지를 쓴 영상만)
+  ai_label:
+    enabled: true
+    text: "AI 생성 이미지 · 재현"
+    font_size: 28
 
 audio:
   bgm_enabled: true
@@ -344,6 +362,40 @@ review:
   max_title_emoji: 1
   min_ending_chars: 8
   max_fix_attempts: 1          # 가벼운 문제(제목)의 자동 수정 횟수
+  # 엄격한 수익화 준비 모드: 출처 없는 구체 주장(연도), 미확인 정보 단정, 권리 미확인 자료를 critical(업로드 보류)로 본다
+  strict: false
+  unverified_rights_policy: "warn"   # warn | review_needed (권리 상태가 unverified 인 음성 등)
+  ad_suitability: true         # 광고 적합성 보조 검사 (수익화/광고 수익 보장 아님)
+  check_unsourced_years: true  # 대본의 연도가 수집 자료에 없으면 표시
+
+# ---------------------------------------------------------------------
+# 영상 공개 후 영상 내용에 맞는 최상위 댓글 1개 자동 등록 (commentThreads.insert)
+# 필요 권한: youtube.force-ssl → `python -m app.main auth` 재인증 후 YOUTUBE_TOKEN_JSON 갱신, 그 다음 enabled: true
+# 댓글 고정은 공식 API 미지원 → 사람이 Studio 에서 고정 후 `comments mark-pinned` 로 기록
+# ---------------------------------------------------------------------
+comments:
+  enabled: false
+  language: "ko"
+  tone: "차분하고 호기심을 나누는 진행자 말투, 존댓말"
+  use_gemini: true             # Gemini 실패/미사용 시 대본의 댓글 질문으로 구성
+  min_chars: 30
+  max_chars: 350
+  require_question: true
+  min_keyword_overlap: 2       # 대본 핵심어와 이만큼 겹쳐야 영상과 관련 있는 댓글로 인정
+  max_similarity_to_previous: 0.6
+  post_when: "public_only"     # public_only | public_or_unlisted (비공개·예약 영상은 공개될 때까지 대기)
+  max_attempts: 5
+  retry_window_days: 7
+  pin_mode: "manual"
+
+# ---------------------------------------------------------------------
+# 채널 브랜딩 (원본: assets/branding/brand.yaml, 출력: assets/branding/output)
+# 실제 채널 적용은 `branding apply --yes` 로만 (기본은 미리보기)
+# ---------------------------------------------------------------------
+branding:
+  brand_file: "assets/branding/brand.yaml"
+  output_dir: "assets/branding/output"
+  video_footer: true           # 영상 설명란 끝에 brand.yaml 의 채널 소개 한 줄
 
 # ---------------------------------------------------------------------
 # YouTube

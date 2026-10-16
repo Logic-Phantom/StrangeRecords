@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from app.ai.gemini_client import GeminiClient, load_prompt
 from app.ai.script_quality import apply_loop_decision, validate_script_quality
+from app.ai.story_format import FORMATS, choose_format, format_instruction, missing_required
 from app.ai.validator import speech_chars, validate_script
 from app.config.settings import Settings
 from app.schemas import ResearchNotes, ScriptDraft, TopicCandidate
@@ -45,9 +46,15 @@ class ScriptGenerator:
         research: ResearchNotes | None,
         previous: list[dict] | None = None,
         performance_context: str = "",
+        story_format: str | None = None,
+        seed: str = "",
     ) -> ScriptDraft:
         cfg = self.settings.script
         category = self.settings.category(candidate.category)
+        truth = research.truth_status if research else candidate.truth_status
+        if story_format not in FORMATS:
+            story_format = choose_format(candidate.category, truth, [p.get("story_format", "") for p in previous or []],
+                                         seed=seed or candidate.topic)
         loop_cfg = cfg.loop_ending
         loop_rule = (
             "이야기에 자연스럽게 맞을 때만 루프 구조를 쓰고 loop=true 로 표시한다. 억지스러우면 loop=false 로 일반 결말을 쓴다."
@@ -73,7 +80,9 @@ class ScriptGenerator:
             min_seconds=int(cfg.min_seconds),
             max_seconds=int(cfg.max_seconds),
             banned_phrases=", ".join(cfg.banned_phrases),
-            truth_status=research.truth_status if research else candidate.truth_status,
+            truth_status=truth,
+            story_format=story_format,
+            story_format_guide=format_instruction(story_format),
             loop_rule=loop_rule,
             recent_openings=format_recent_openings(previous),
             performance_context=performance_context or "(성과 데이터 없음 - 기본 원칙대로)",
@@ -87,9 +96,15 @@ class ScriptGenerator:
 
         draft = self.client.generate_json(prompt, ScriptDraft, validate=_validate)
         apply_loop_decision(draft, quality["q"], cfg)
+        draft.story_format = story_format  # Gemini 가 다른 값을 써도 고른 형식으로 기록
         for w in quality["q"].warnings:
             logger.info("대본 참고: %s", w)
-        logger.info("Script generated: '%s' (%d자, hook=%s, loop=%s, %s, 최근 대본 유사도 %.2f)", draft.title,
-                    speech_chars(draft.script), draft.hook_type, draft.loop, draft.truth_status, draft.script_similarity or 0)
+        # 고유한 설명 항목은 생성을 막지 않고 기록만 한다 (콘텐츠 검수에서 warning 으로 표시)
+        missing = missing_required(story_format, draft.explainer)
+        if missing:
+            logger.info("전개 형식 %s 의 설명 항목 부족: %s", story_format, ", ".join(missing))
+        logger.info("Script generated: '%s' (%d자, hook=%s, 형식=%s, loop=%s, %s, 최근 대본 유사도 %.2f)", draft.title,
+                    speech_chars(draft.script), draft.hook_type, draft.story_format, draft.loop, draft.truth_status,
+                    draft.script_similarity or 0)
         logger.info("루프 판정: %s", draft.loop_note)
         return draft

@@ -31,6 +31,7 @@ from app.ai.script_generator import ScriptGenerator
 from app.ai.topic_generator import TopicGenerator
 from app.assets.asset_manager import AssetManager, build_providers
 from app.assets.audio_library import AudioLibrary
+from app.branding.channel import video_footer
 from app.config.settings import Settings
 from app.database.db import Database
 from app.database.models import JobRecord, JobStatus, TopicStatus
@@ -61,8 +62,10 @@ logger = get_logger("pipeline")
 
 STEPS = [
     "topic", "research", "script", "scenes", "voice", "assets", "subtitles", "render", "quality", "metadata", "review",
-    "upload", "record",
+    "upload", "comment", "record",
 ]
+# 업로드가 꺼져 있으면 건너뛰는 단계 (comment 는 업로드한 영상에만 의미가 있다)
+UPLOAD_STEPS = ("upload", "comment")
 
 
 class QualityCheckFailed(NonRetryableError):
@@ -183,6 +186,7 @@ class DailyPipeline:
                 "hook": content.get("hook") or draft.get("hook", ""),
                 "script": script,
                 "hook_type": draft.get("hook_type", ""),
+                "story_format": draft.get("story_format", ""),
             })
         return out[:limit]
 
@@ -217,8 +221,13 @@ class DailyPipeline:
         self.jobs.update(job_id, status=JobStatus.RUNNING, error=None, retry_count=job.retry_count + 1)
         ctx = JobContext(job=job, state=job.state, completed=list(job.completed_steps))
         # 업로드 활성화로 재실행 시 upload/record 단계를 다시 수행
+        # 단, 이미 YouTube 에 올라간 작업(state.upload.video_id)은 다시 올리지 않는다 (업로드 후 단계에서 실패한 경우 중복 업로드 방지)
         if upload_enabled:
-            ctx.completed = [s for s in ctx.completed if s not in ("upload", "record")]
+            uploaded = bool((ctx.state.get("upload") or {}).get("video_id"))
+            redo = ("comment", "record") if uploaded else ("upload", "comment", "record")
+            if uploaded and "upload" not in ctx.completed:
+                ctx.completed.append("upload")
+            ctx.completed = [s for s in ctx.completed if s not in redo]
         logger.info("=" * 60)
         logger.info("Resume job %s (완료 단계: %s)", job_id, ", ".join(ctx.completed) or "-")
         return self._run(ctx)
@@ -229,8 +238,8 @@ class DailyPipeline:
             for step in STEPS:
                 if step in ctx.completed:
                     continue
-                if step == "upload" and not ctx.job.upload_enabled:
-                    logger.info("[upload] 건너뜀 (업로드 비활성: development/test 모드)")
+                if step in UPLOAD_STEPS and not ctx.job.upload_enabled:
+                    logger.info("[%s] 건너뜀 (업로드 비활성: development/test 모드)", step)
                     continue
                 self._run_step(ctx, step, getattr(self, f"step_{step}"))
         except Exception as exc:
@@ -339,7 +348,7 @@ class DailyPipeline:
             candidate = self._candidate(ctx)
             draft = ScriptGenerator(self.gemini, self.settings).generate(
                 candidate, self._research(ctx), previous=self._previous(ctx),
-                performance_context=self._performance_context(candidate.category),
+                performance_context=self._performance_context(candidate.category), seed=ctx.id,
             )
         ctx.state["draft"] = draft.model_dump()
 
@@ -450,12 +459,13 @@ class DailyPipeline:
         renderer = VideoRenderer(self.settings, library)
         chunks = [SubtitleChunk(**c) for c in ctx.state["subtitles"]["chunks"]]
         out = self.paths.videos / f"{ctx.id}.mp4"
+        cards = self._info_cards(ctx, content)
 
         def _render():
             return renderer.render(
                 content.scenes, self._assets(ctx), self._timings(ctx), Path(ctx.state["narration"]["path"]),
                 ctx.state["narration"]["duration"], chunks, bgm, content.title, out, self.work_dir(ctx),
-                thumbnail_path=self.paths.thumbnails / f"{ctx.id}.jpg", hook_seed=ctx.id,
+                thumbnail_path=self.paths.thumbnails / f"{ctx.id}.jpg", hook_seed=ctx.id, info_cards=cards,
             )
 
         result = retry_call(_render, step="FFmpeg Render", max_attempts=2, delays=self.settings.retry.delays)
@@ -464,8 +474,25 @@ class DailyPipeline:
             "thumbnail": str(result.thumbnail_path) if result.thumbnail_path else None,
             "bgm": bgm.model_dump() if bgm else None, "sfx": result.sfx_used,
             "hook_effect": result.hook_effect,
+            "info_cards": [c.to_dict() for c in cards],
         }
         self.jobs.update(ctx.id, video_path=str(result.video_path))
+
+    def _info_cards(self, ctx: JobContext, content: ShortsContent) -> list:
+        """대본 explainer 중 자료로 확인되고 나레이션에 실제로 나온 항목만 카드로. 실패해도 카드 없이 렌더링."""
+        from app.schemas import Explainer
+        from app.video.info_cards import plan_info_cards
+
+        draft = ctx.state.get("draft") or {}
+        try:
+            cards = plan_info_cards(content.scenes, Explainer(**(draft.get("explainer") or {})), self._research(ctx),
+                                    draft.get("story_format") or "classic", self.settings.video.info_cards)
+        except Exception as exc:
+            logger.warning("정보 카드 구성 실패 → 카드 없이 렌더링: %s", exc)
+            return []
+        for c in cards:
+            logger.info("정보 카드: 장면 %d [%s] %s (%d줄)", c.scene_number, c.kind, c.title, len(c.rows))
+        return cards
 
     def step_quality(self, ctx: JobContext) -> None:
         report = QualityChecker(self.settings.quality).check(
@@ -486,7 +513,7 @@ class DailyPipeline:
                 VideoMetadata(title=fx.get("title", content.title), description=fx.get("description", ""),
                               hashtags=fx.get("hashtags", []), tags=fx.get("tags", []),
                               title_en=fx.get("title_en", ""), description_en=fx.get("description_en", "")),
-                content, research, assets, bgm,
+                content, research, assets, bgm, footer=video_footer(self.settings),
             )
         else:
             previous_titles = [p["title"] for p in self._previous(ctx) if p["title"]]
@@ -510,7 +537,8 @@ class DailyPipeline:
 
         def _review():
             return review_content(self.settings, content, meta, self._research(ctx), self._assets(ctx), self._bgm(ctx),
-                                  previous, hook_type=draft.get("hook_type", ""), offline=self.options.offline)
+                                  previous, hook_type=draft.get("hook_type", ""), offline=self.options.offline,
+                                  draft=draft)
 
         report = _review()
         fixes: list[str] = []
@@ -535,12 +563,16 @@ class DailyPipeline:
         for issue in report.issues:
             log = logger.error if issue.severity == "critical" else logger.warning if issue.severity == "minor" else logger.info
             log("콘텐츠 검수 [%s] %s: %s", issue.severity, issue.code, issue.message)
-        logger.info("콘텐츠 검수: %s (독창성 보조 지표 %.2f, 최근 대본 최대 유사도 %.2f)", report.status,
-                    report.originality_score, report.script_similarity)
+        logger.info("콘텐츠 검수: %s (독창성 보조 지표 %.2f, 최근 대본 최대 유사도 %.2f, 광고 적합성 보조 지표 %s)", report.status,
+                    report.originality_score, report.script_similarity, (report.ad_suitability or {}).get("status", "-"))
         if report.critical:
             if approved:
-                logger.warning("critical 문제가 있지만 사용자가 승인함 (upload --approve-review) → 진행")
+                # 승인은 '사람이 확인하고 진행했다'는 기록일 뿐, 사실/라이선스 문제가 해결된 것으로 바꾸지 않는다
+                unresolved = sorted({i.code for i in report.critical})
+                logger.warning("critical 문제가 있지만 사용자가 승인함 (upload --approve-review) → 진행. 미해결 항목: %s",
+                               ", ".join(unresolved))
                 ctx.state["review"]["passed"] = True
+                ctx.state["review"]["approved_unresolved"] = unresolved
                 return
             self._save(ctx, "review")
             raise ContentReviewFailed(
@@ -566,6 +598,32 @@ class DailyPipeline:
         )
         if ctx.state.get("topic_id"):
             self.topics.update(ctx.state["topic_id"], video_id=result.video_id, youtube_url=result.url, status=TopicStatus.UPLOADED)
+
+    def step_comment(self, ctx: JobContext) -> None:
+        """공개된 영상에 주제 맞춤 최상위 댓글 1개 (comments.enabled). 실패해도 업로드 성공 상태를 바꾸지 않는다."""
+        cfg = self.settings.comments
+        if self.options.offline or not cfg.enabled:
+            ctx.state["comment"] = {"status": "disabled" if not cfg.enabled else "offline"}
+            return
+        from app.youtube.comments import CommentService, CommentStatus
+
+        job = self.jobs.get(ctx.id)
+        if job is None:
+            return
+        job.state = ctx.state
+        gemini = None
+        if cfg.use_gemini and self.settings.secrets.gemini_api_key:
+            try:
+                gemini = self.gemini
+            except Exception as exc:
+                logger.warning("댓글용 Gemini 준비 실패 → 대본의 댓글 질문으로 구성: %s", exc)
+        result = CommentService(self.settings, self.db, gemini=gemini).process_job(job)
+        ctx.state["comment"] = result
+        if result.get("status") not in (CommentStatus.POSTED, CommentStatus.WAITING):
+            # 단계 자체는 성공으로 두고(업로드 결과 보존), 댓글 결과만 따로 남긴다
+            self.step_logs.add(ctx.id, "comment_post", str(result.get("status")),
+                               str(result.get("error_code") or result.get("message") or ""))
+        logger.info("자동 댓글: %s", result.get("status"))
 
     def step_record(self, ctx: JobContext) -> None:
         content = self._content(ctx)
@@ -599,6 +657,8 @@ class DailyPipeline:
         record["production"] = self._record_production(ctx, content, upload, meta)
         record["topic_selection"] = ctx.state.get("topic_selection")
         record["review"] = ctx.state.get("review")
+        record["comment"] = ctx.state.get("comment")
+        record["story_format"] = (ctx.state.get("draft") or {}).get("story_format")
         write_json(self.paths.metadata / f"{ctx.id}.json", record)
 
         uploaded = bool(upload)
@@ -650,6 +710,7 @@ def _production_fields(settings: Settings, state: dict, content: ShortsContent, 
             "visual_sources": dict(sources), "ai_style": settings.assets.ai_image.style,
             "loop_note": draft.get("loop_note"), "hook_effect": hook, "topic_strategy": sel.get("strategy"),
             "review_issues": [i.get("code") for i in review.get("issues", [])],
+            "story_format": draft.get("story_format"),
         },
     }
 

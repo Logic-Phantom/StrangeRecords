@@ -37,6 +37,17 @@
     "truth_status": "FACT",
     "truth_notice": "",
     "loop": false,
+    "story_format": "evidence",
+    "explainer": {
+      "confirmed_facts": ["모두 열 명이 타고 있었음", "여섯 달 치 식량과 물이 남아 있었음", "구명보트가 사라짐"],
+      "unconfirmed_claims": ["알코올 증기 폭발이 두려워 피했다는 가설"],
+      "key_clues": ["사라진 구명보트", "대부분 멀쩡한 알코올 통"],
+      "hypotheses": [{"name": "알코올 증기 폭발 가설", "evidence": "화물이 알코올 통", "weakness": "폭발 흔적 없음"}],
+      "unresolved": ["승선원들이 배를 떠난 정확한 이유"],
+      "timeline": [],
+      "source_agreement": "한국어·영어 위키백과의 발견 시기와 인원이 일치",
+      "unique_insight": "유명한 '따뜻한 차' 장면은 소설에서 온 허구이고, 실제 기록의 단서는 사라진 구명보트 하나다"
+    },
     "description": "1872년 대서양에서 승선원 10명이 모두 사라진 채 발견된 메리 셀레스트호. 남겨진 단서와 널리 퍼진 오해, 그리고 유력한 가설을 정리했습니다. 승선원들이 배를 떠난 이유는 지금도 확인되지 않았습니다.\n여러분의 생각을 댓글로 남겨주세요!",
     "title_en": "The Ship Where Only the People Vanished: the Mary Celeste",
     "description_en": "In 1872, the Mary Celeste was found in the Atlantic with all ten people aboard gone. We look at the clues left behind, a widespread myth, and the leading theory. Why the crew abandoned the ship is still unknown.\nShare your theory in the comments!",

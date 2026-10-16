@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 token.json
+token.json.bak
+*.json.bak
 credentials.json
 client_secret*.json
 *.key

@@ -18,7 +18,15 @@ logger = get_logger("youtube.auth")
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.readonly"]
 # 성과 수집(YouTube Analytics API)용 읽기 범위. `auth` 명령에서 기존 범위와 함께 요청한다.
 ANALYTICS_SCOPES = ["https://www.googleapis.com/auth/yt-analytics.readonly"]
+# 영상 댓글 등록(commentThreads.insert) / 채널 정보 수정(channels.update)에 필요한 범위.
+# 공식 문서상 commentThreads.insert 는 youtube.force-ssl 만 허용한다. `auth` 명령에서 기존 범위와 함께 요청한다.
+COMMENT_SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
 AUTH_SCOPES = SCOPES + ANALYTICS_SCOPES
+
+
+def requested_scopes(analytics: bool = True, comments: bool = True) -> list[str]:
+    """`auth` 명령이 요청할 범위: 기존 업로드/읽기 범위는 항상 유지하고 선택 범위를 더한다."""
+    return SCOPES + (ANALYTICS_SCOPES if analytics else []) + (COMMENT_SCOPES if comments else [])
 
 
 class YouTubeAuthError(NonRetryableError):

@@ -200,6 +200,11 @@ class VoiceConfig(BaseModel):
     endpoints: list[str] = Field(default_factory=lambda: ["msedgeservices", "bing"])
     min_interval: float = 2.5        # 요청 사이 최소 간격(초)
     rate_limit_waits: list[float] = Field(default_factory=lambda: [5, 10, 20, 30, 45])  # 429 시 대기(초)
+    # 합성 음성의 상업적 이용 권리 상태: unverified(확인 안 됨) | verified(서면 근거 확인) | restricted(이용 불가 확인)
+    # 코드가 자동으로 verified 로 바꾸지 않는다. verified 는 rights_evidence(약관 URL/서면 답변 위치)가 있어야 인정한다.
+    rights_status: str = "unverified"
+    rights_evidence: str = ""
+    rights_checked_at: str = ""
 
 
 class AIImageConfig(BaseModel):
@@ -291,6 +296,23 @@ class HookEffectConfig(BaseModel):
     deterministic_seed: bool = True          # 같은 작업은 같은 흔들림/글리치 위치
 
 
+class InfoCardConfig(BaseModel):
+    """대본의 확인된 사실/가설/타임라인을 화면 정보 카드로 보여준다 (자막 트랙에 함께 그림, 추가 API 없음)."""
+
+    enabled: bool = True
+    max_cards: int = 2
+    position_y: float = 0.22                 # 카드 위쪽 끝 (화면 높이 비율, 제목 아래·자막 위)
+    max_items: int = 4
+
+
+class AILabelConfig(BaseModel):
+    """AI 생성 이미지를 실제 촬영 기록으로 오해하지 않도록 화면 구석에 작게 표시."""
+
+    enabled: bool = True
+    text: str = "AI 생성 이미지 · 재현"
+    font_size: int = 28
+
+
 class VideoConfig(BaseModel):
     width: int = 1080
     height: int = 1920
@@ -306,6 +328,8 @@ class VideoConfig(BaseModel):
     outro_padding: float = 0.8
     global_fade: float = 0.4
     hook_effect: HookEffectConfig = Field(default_factory=HookEffectConfig)
+    info_cards: InfoCardConfig = Field(default_factory=InfoCardConfig)
+    ai_label: AILabelConfig = Field(default_factory=AILabelConfig)
 
 
 class AudioConfig(BaseModel):
@@ -342,6 +366,14 @@ class ReviewConfig(BaseModel):
     max_title_emoji: int = 1
     min_ending_chars: int = 8
     max_fix_attempts: int = 1                # 제목 문제 등 가벼운 문제의 자동 수정 횟수
+    # 엄격한 수익화 준비 모드: 출처 없는 구체 주장·미확인 정보 단정·음성 권리 미확인 등을 warning 대신 critical(review_needed)로 본다
+    strict: bool = False
+    # 권리 상태가 확인되지 않은 자료(음성 등): warn(경고만) | review_needed(업로드 보류). strict=true 면 review_needed 로 본다
+    unverified_rights_policy: str = "warn"
+    # 광고 적합성 검사 (수익화 승인/광고 수익을 보장하지 않는 보조 검사)
+    ad_suitability: bool = True
+    # 대본의 연도가 수집 자료(출처 본문·사실 목록)에 없으면 출처 없는 구체 주장으로 본다
+    check_unsourced_years: bool = True
 
 
 class YouTubeConfig(BaseModel):
@@ -356,6 +388,34 @@ class YouTubeConfig(BaseModel):
     contains_synthetic_media: bool = True
     client_secrets_file: str = "credentials.json"
     token_file: str = "token.json"
+
+
+class CommentConfig(BaseModel):
+    """영상 공개 후 영상 내용에 맞는 최상위 댓글 1개를 채널 계정으로 등록 (commentThreads.insert, youtube.force-ssl 필요)."""
+
+    enabled: bool = False
+    language: str = "ko"
+    tone: str = "차분하고 호기심을 나누는 진행자 말투, 존댓말"
+    use_gemini: bool = True                  # false 거나 Gemini 실패 시 대본의 댓글 질문(comment_prompt)으로 구성
+    min_chars: int = 30
+    max_chars: int = 350
+    require_question: bool = True            # 시청자 의견을 묻는 질문이 있어야 등록
+    min_keyword_overlap: int = 2             # 대본 핵심어와 겹치는 단어 수 (영상과 무관한 댓글 방지)
+    max_similarity_to_previous: float = 0.6  # 이전 자동 댓글과 이만큼 비슷하면 등록 안 함 (반복 댓글 방지)
+    # public_only: 실제 public 확인 후에만 / public_or_unlisted: 일부 공개도 허용. 비공개·예약 영상은 공개될 때까지 대기
+    post_when: str = "public_only"
+    max_attempts: int = 5                    # 영상당 최대 등록 시도 (실패해도 새 댓글을 만들지 않고 같은 본문으로 재시도)
+    retry_window_days: int = 7               # 업로드 후 이 기간 안의 영상만 재시도/대기
+    pin_mode: str = "manual"                 # 공식 API 에 고정 기능 없음 → 사람이 Studio 에서 고정 후 기록
+
+
+class BrandingConfig(BaseModel):
+    """채널 브랜딩 자산/메타데이터 (assets/branding/brand.yaml 이 원본). 실제 채널 적용은 명시적 명령으로만."""
+
+    brand_file: str = "assets/branding/brand.yaml"
+    output_dir: str = "assets/branding/output"
+    # 영상 설명란 끝에 붙이는 채널 소개 한 줄 (brand.yaml 의 video_footer 가 있으면 그것을 사용)
+    video_footer: bool = True
 
 
 class ScheduleConfig(BaseModel):
@@ -508,6 +568,8 @@ class Settings(BaseModel):
     trends: TrendConfig = Field(default_factory=TrendConfig)
     analytics: AnalyticsConfig = Field(default_factory=AnalyticsConfig)
     youtube: YouTubeConfig = Field(default_factory=YouTubeConfig)
+    comments: CommentConfig = Field(default_factory=CommentConfig)
+    branding: BrandingConfig = Field(default_factory=BrandingConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)

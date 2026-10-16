@@ -4,6 +4,8 @@
 
 2026-10-15 부터 **성장 엔진**이 추가되었습니다: 업로드한 영상의 YouTube 성과를 수집·분석하고, 외부 관심 신호(위키백과 조회수, YouTube)와 함께 다음 영상의 주제 선정·대본·편집에 반영합니다 (→ [14절](#14-성장-엔진-트렌드--성과-분석--자동-개선)).
 
+2026-10-16 부터 **수익화 준비 기능**이 추가되었습니다: 공개 영상 주제 맞춤 댓글(등록/고정 상태 분리), 채널 브랜딩 자산·일관성 점검, 영상별 전개 형식·정보 카드, 사실성·출처·장면 일치·광고 적합성 검수, Edge TTS 권리 상태 표시 (→ [15절](#15-수익화-준비-댓글--브랜딩--검수--권리)).
+
 - AI 엔진: **Google Gemini API 하나만 사용** (기본 `gemini-3.5-flash`, 과부하 시 자동 대체 모델 전환, 모델명은 `config.yaml` 한 곳에서 관리)
 - 음성: Edge TTS (무료) · 시각자료: **대본 기반 AI 장면 이미지: Cloudflare Workers AI / Hugging Face SDXL** (Gemini 이미지는 무료 티어 한도 0 이라 비활성) → Pexels / Pixabay (무료 API) · 자막: faster-whisper (로컬) · 편집: FFmpeg · DB: SQLite
 - 출력: **1080x1920 · 9:16 · 30fps · H.264 · AAC · MP4**, 한국어 40~60초, **한국어 + 영어 자막 / 한국어 + 영어 설명란** (해외 시청자용)
@@ -25,7 +27,8 @@
 → [12] FFmpeg: 9:16 crop / Ken Burns / 첫 장면 Hook 효과 / 전환 / 자막 / BGM 덕킹 / 효과음 / -14 LUFS
 → [13] 품질 검사(실패 시 업로드 금지) → [14] Gemini 제목 후보 3개·설명·해시태그 (+ 출처 자동 표기) → 제목 평가/선택
 → [14-1] 콘텐츠 검수(출처/단정/독창성/라이선스/AI 고지, critical 이면 업로드 금지 → review_needed)
-→ [15] YouTube 업로드 → [16] 공개(즉시 또는 12:00 예약) → [17] SQLite + JSON 이력 + 제작 조건(production_metadata) 저장
+→ [15] YouTube 업로드 → [16] 공개(즉시 또는 12:00 예약) → [16-1] (보조) 공개 확인 후 주제 맞춤 댓글 1개 (comments.enabled)
+→ [17] SQLite + JSON 이력 + 제작 조건(production_metadata) 저장
 ```
 
 [0]·[1-1]·[3-1] 은 보조 기능입니다. 외부 API/권한이 없거나 실패해도 기존 방식(Gemini 후보 + 중복 검사 + 카테고리 순환)으로 제작·업로드합니다.
@@ -102,7 +105,19 @@ python -m app.main remake [JOB] --from-step voice   # 완료된 작업을 그 �
 python -m app.main upload [JOB] # 제작 완료(rendered) 영상 업로드
 python -m app.main upload --privacy private   # 이번 업로드만 비공개로 (scheduled | public 도 가능)
 python -m app.main upload JOB --approve-review   # 콘텐츠 검수 보류(review_needed) 작업을 사람이 확인 후 업로드
-python -m app.main auth         # YouTube OAuth 인증 (업로드 + 읽기 + Analytics 읽기, token.json 저장. --no-analytics: 기존 권한만)
+python -m app.main comments status [--verify]   # 자동 댓글 등록 상태 + 고정 상태 (따로 표시)
+python -m app.main comments retry [JOB]   # 대기(예약/비공개)·실패·권한 부족 댓글 재시도 (같은 본문, 중복 확인 후)
+python -m app.main comments preview [JOB] [--offline]   # 댓글 본문 미리보기 (저장/등록 안 함)
+python -m app.main comments pins          # 고정 처리가 필요한 댓글 (API 미지원 → 수동)
+python -m app.main comments mark-pinned VIDEO_OR_JOB [--note ..] [--undo]   # 사람이 고정했다고 기록
+python -m app.main comments guide         # 수동 고정 운영 가이드 → data/reports/pin_guide.md
+python -m app.main review [JOB]           # 콘텐츠 검수 결과 (사실성·출처·장면·라이선스·광고 적합성)
+python -m app.main rights                 # Edge TTS 상업적 이용 권리 상태
+python -m app.main branding check         # 홈페이지·약관·OAuth 범위·브랜드 자산 일관성 점검 (API 호출 없음)
+python -m app.main branding assets        # 아이콘/배너/워터마크 PNG 생성 (채널 적용 안 함)
+python -m app.main branding status        # 현재 채널 브랜딩 조회 (읽기)
+python -m app.main branding apply [--yes] [--banner]   # 기본은 변경 미리보기, --yes 일 때만 채널 수정
+python -m app.main auth         # YouTube OAuth 인증 (업로드 + 읽기 + Analytics 읽기 + 댓글(force-ssl), token.json 저장. --no-analytics / --no-comments)
 python -m app.main setup        # 폴더/DB/기본 BGM·효과음 생성
 python -m app.main doctor       # 환경 점검
 python -m app.main models       # 사용 가능한 Gemini 모델 목록
@@ -220,13 +235,16 @@ app/
 │            audio_library.py, synth_audio.py
 ├── subtitle/whisper.py, chunker.py
 ├── video/   ffmpeg.py, scenes.py, subtitle_renderer.py, renderer.py, hook_effect.py (첫 3초 효과)
-├── quality/ checker.py (영상 규격), content_checker.py (콘텐츠 검수/업로드 게이트)
-├── youtube/ auth.py, uploader.py
+├── quality/ checker.py (영상 규격), content_checker.py (콘텐츠 검수/업로드 게이트), ad_suitability.py (광고 적합성)
+├── youtube/ auth.py, uploader.py, comments.py (자동 댓글·고정 상태)
+├── branding/channel.py         # 브랜드 자산 생성 / 일관성 점검 / 채널 메타데이터 미리보기·적용
+├── ai/      comment_generator.py (댓글 문안·검수), story_format.py (영상별 전개 형식)
+├── video/   info_cards.py (정보 카드), voice/rights.py (음성 권리 상태)
 ├── database/db.py, models.py, repositories.py
 ├── scheduler/scheduler.py
 ├── pipeline/daily_pipeline.py
 └── utils/   logger.py, files.py, retry.py
-assets/  music/ (BGM + music.json)  sfx/  images/  videos/  fonts/
+assets/  music/ (BGM + music.json)  sfx/  images/  videos/  fonts/  branding/ (brand.yaml 원본 + output/ 업로드용 PNG)
 data/    database.sqlite  topics/  scripts/  metadata/  sources/  reports/
 output/  audio/  videos/  subtitles/  thumbnails/  work/
 ```
@@ -251,7 +269,7 @@ output/  audio/  videos/  subtitles/  thumbnails/  work/
 | Pixabay | [Pixabay Content License](https://pixabay.com/service/license-summary/) | 상업적 사용 무료, 핫링크 금지 → 다운로드 후 사용 |
 | Wikipedia | CC BY-SA | 사실 확인용 참고자료, 설명란에 출처 링크 표기 |
 | 기본 BGM/효과음 | CC0 | `synth_audio.py` 로 직접 합성 (외부 음원 아님) |
-| Edge TTS 음성 | Microsoft 서비스 약관 | 사용 전 최신 약관 확인 |
+| Edge TTS 음성 | **상업적 이용 권리 미확인 (`unverified`)** | edge-tts 코드 라이선스 ≠ Microsoft 음성 출력물 이용 허락. 15.5절 |
 | Gemini 생성 텍스트/이미지 | Google 약관 | AI 생성 사실 고지 (`containsSyntheticMedia`, 설명란) |
 
 - 직접 BGM 을 추가할 때는 `assets/music/` 에 파일을 넣고 `music.json` 에 `title, artist, source, license, url, mood` 를 기록하세요. **license 가 없는 음원은 사용하지 않습니다.**
@@ -292,6 +310,14 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 | 대본 품질·자연스러운 루프 엔딩 / 제목 후보 3개 / 콘텐츠 검수 게이트 | ✅ 구현 + 테스트 + `test --offline` 통과 |
 | 첫 3초 Hook 효과 (FFmpeg) | ✅ 실제 렌더링 확인 (imageio-ffmpeg 7.1, 프리셋 4종, 필터 미지원/실패 시 효과 없이 렌더링) / GitHub Actions FFmpeg 는 첫 실행에서 확인 필요 |
 | 상태 DB 암호화 (`STATE_DB_KEY`) | ⏳ 구현 (openssl 왕복 로컬 확인) / Secret 등록 후 Actions 실행 확인 필요 |
+| 주제 맞춤 자동 댓글 (commentThreads.insert) | 🧪 구현 + Mock 테스트 / **미검증**: 재인증(force-ssl) 전이라 실제 등록 안 함, 기본 `comments.enabled: false` |
+| 댓글 고정 | ✋ **수동 처리 필요** (공식 API 미지원 확인) → `comments pins` / `mark-pinned` |
+| 채널 브랜딩 자산 / 일관성 점검 | ✅ 아이콘·배너·워터마크 생성, `branding check` 통과 (docs 개인정보처리방침 수정 후) |
+| 채널 메타데이터 적용 (channels.update / channelBanners) | 🧪 구현 + Mock 테스트 / **미검증**: 실제 채널에 적용하지 않음 (`branding apply --yes` 필요) |
+| 프로필 사진·워터마크 적용 | ✋ 수동 처리 필요 (Studio) |
+| 전개 형식 6종 / 고유 설명(explainer) / 정보 카드 / AI 이미지 표시 | ✅ 구현 + 테스트 + `test --offline` 렌더링 확인 / 실제 Gemini 대본으로는 미검증 |
+| 사실·출처·장면 일치·라이선스·광고 적합성 검수 | ✅ 구현 + 테스트 (규칙 기반 보조 검사, 수익화 보장 아님) |
+| Edge TTS 상업적 이용 권리 | ⚠️ `unverified` 표시 + 검수 경고 (확인은 사람이 해야 함) |
 
 ## 13. 작업 내역
 
@@ -458,6 +484,11 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
    - GitHub Secret `STATE_DB_KEY` 등록 (공개 저장소의 DB 에 비공개 성과 지표가 들어가므로)
    - 첫 클라우드 실행에서 확인: `Collect YouTube performance` 단계 결과, Hook 효과 로그(`첫 장면 Hook 효과 적용`), `topic_scores`/`production_metadata` 기록
 
+0-1. 수익화 준비 기능 활성화 (2026-10-16 추가, 15절)
+   - OAuth 데이터 액세스에 `youtube.force-ssl` 추가 → `auth` 재인증 → `YOUTUBE_TOKEN_JSON` 갱신 → `comments.enabled: true`
+   - `branding apply` 로 채널 소개 미리보기 확인 후 `--yes` (선택 `--banner`), 프로필 사진·워터마크는 Studio 에서 수동 업로드
+   - Edge TTS 상업적 이용 조건 확인 (확인 전에는 `unverified`)
+
 1. 시각자료 보조 수단(선택): Cloudflare 무료 한도(하루 10,000 Neurons)나 장애에 대비
    - Pixabay API Key (무료, 이미 구현됨) → GitHub Secret `PIXABAY_API_KEY`
    - Hugging Face: 토큰 권한은 추가 완료, 계정 크레딧 0 이라 402 → https://huggingface.co/settings/billing 에서 충전 시 동작
@@ -576,4 +607,130 @@ final = base − 0.15 × saturation − 0.20 × near_duplicate
 - 실제 실행에서 "외부 신호가 없는 후보가 더 높은 점수"를 받는 결측 편향 발견 → 회차 중앙값 보정
 - 위키백과 인기 문서에서 "사건" 같은 일반어 하나로 민감한 실제 사건이 관련 있다고 잡히는 문제 → 일반어 제외, `exclude_keywords` 추가
 - 로컬 macOS 의 token.json 은 만료/철회(`invalid_grant`) 상태 → YouTube Data/Analytics 실제 조회는 검증하지 못함 (영상별 실패 격리·안내는 확인)
+
+## 15. 수익화 준비 (댓글 · 브랜딩 · 검수 · 권리)
+
+2026-10-16 추가. 성장 엔진(`app/topics/`, `app/trends/`, `app/analytics/`)은 변경하지 않았습니다.
+상태 표기: ✅ 구현+테스트 / 🧪 구현+Mock 테스트, 실제 서비스 미검증 / ✋ 수동 처리 필요.
+
+### 15.1 주제 맞춤 자동 댓글 (`comments:`, `app/youtube/comments.py`) 🧪
+
+- 영상이 **실제로 public 으로 확인된 뒤** 채널 계정으로 최상위 댓글 1개를 등록합니다 (`commentThreads.insert`, 50 units).
+  비공개·예약 영상은 `waiting_publish` 로 두고, 공개된 뒤 `comments retry`(GitHub Actions 가 매 실행 시작 시 자동 실행)에서 등록합니다.
+- 문안: 영상 제목 + 최종 대본 + 자료 조사의 확인된 사실/미확인 정보 + 대본의 `explainer`(핵심 단서·가설·남은 질문)로 Gemini 가 작성
+  (유형: 단서 해석 질문 / 두 가설 비교 / 미해결 의문 / 추가 관점). Gemini 를 쓰지 않거나 실패하면 대본의 댓글 질문으로 구성합니다.
+- 등록 전 검수(통과 못 하면 등록 안 함, `rejected`): 빈 댓글, 길이, 대괄호·빈칸 등 미완성 문구, 링크·해시태그·멘션·이모지, 구독/좋아요 요청·홍보,
+  존재하지 않는 후속편·이벤트, 허위 경험·시청자인 척, 낚시 표현, 질문 없음, 대본 핵심어와 겹치는 단어 2개 미만(영상과 무관), 대본에 없는 연도,
+  이전 자동 댓글과 유사(반복 댓글).
+- 중복 방지: `video_comments` 테이블(마이그레이션 v2, 영상당 1행 UNIQUE). 본문은 처음 한 번만 만들어 저장하고 재시도는 같은 본문을 씁니다.
+  등록 전에 항상 그 영상의 최근 댓글 중 **채널 계정이 쓴 같은 본문**을 찾아, 타임아웃으로 실제로는 등록됐던 경우 새로 등록하지 않고 `posted` 로 정리합니다.
+- 재시도: 타임아웃·5xx·429 → `failed` (영상당 최대 `max_attempts`=5회), 권한 부족 → `permission_denied`(API 호출 안 함, 재인증 후 재시도),
+  댓글 사용 중지·영상 없음·400 → `rejected`(자동 재시도 안 함), 업로드 후 `retry_window_days`(7일) 지나면 `skipped`.
+- 실패 격리: 파이프라인 `comment` 단계(upload 와 record 사이)는 예외를 올리지 않습니다. 댓글이 실패해도 작업은 `success`, 하루 1개 정책·업로드 결과는 그대로입니다.
+  업로드 후 단계에서 실패한 작업을 다시 실행해도 이미 올라간 영상(state 에 video_id 있음)은 **다시 업로드하지 않도록** 수정했습니다.
+- 기록 항목: job_id, 영상 ID, 본문, 유형, 생성기(gemini/fallback), 댓글 ID, 상태, 시도 횟수, 오류 코드/사유, 생성·등록·마지막 시도 시각, 고정 상태·기록 시각·메모.
+
+**OAuth 권한 / 재인증 (필수, 사람이 해야 함)**
+
+공식 문서상 `commentThreads.insert` 는 `https://www.googleapis.com/auth/youtube.force-ssl` 범위만 허용합니다. 현재 token.json 에는 없습니다.
+
+1. [Google 인증 플랫폼 → 데이터 액세스](https://console.cloud.google.com/auth/scopes) 에 `.../auth/youtube.force-ssl` 추가 (민감 범위: 동의 화면에 "YouTube 계정 관리" 로 표시됨)
+2. 로컬에서 `python -m app.main auth` → 업로드·읽기·Analytics·댓글 권한을 한 번에 승인 (기존 토큰은 `token.json.bak` 로 백업, `.gitignore` 에 추가됨). 끝에 실제 승인된 범위를 출력합니다
+3. **GitHub Secret `YOUTUBE_TOKEN_JSON` 을 새 token.json 내용으로 갱신** (안 하면 클라우드 실행은 `permission_denied` 로 기록만 하고 업로드는 정상)
+4. `config.yaml` → `comments.enabled: true` → `python -m app.main comments preview` 로 문안 확인 → 다음 실행부터 자동 등록
+5. 권한 점검: `python -m app.main comments status` / `doctor`
+
+### 15.2 댓글 고정 ✋ 수동 처리
+
+YouTube Data API 의 `comments`/`commentThreads` 리소스에는 고정 속성·메서드가 없습니다 (2026-10-16 공식 문서 확인).
+브라우저 자동화·비공개 엔드포인트로 고정하지 않습니다. 등록 성공은 고정 성공이 아니므로 `pin_status` 를 따로 둡니다:
+`not_applicable`(등록 전) → `manual_required`(등록됨, 고정 필요) → `pinned_manual`(사람이 고정했다고 기록, API 로 검증한 값 아님) / `unknown`(댓글이 조회되지 않음).
+
+1. `python -m app.main comments guide` → `data/reports/pin_guide.md` (영상 제목·URL, 댓글 ID, 본문, 절차)
+2. YouTube 에서 해당 댓글 ⋮ → 고정 (영상당 1개, 기존 고정 댓글은 교체됨)
+3. `python -m app.main comments mark-pinned <영상ID> --note "Studio 에서 고정"` (취소: `--undo`)
+
+### 15.3 채널 브랜딩 (`assets/branding/`, `branding:`)
+
+| 파일 | 용도 | 적용 |
+|---|---|---|
+| `assets/branding/brand.yaml` | **원본**: 채널 소개(한/영, AI 고지 포함), 키워드, 언어/국가, 영상 설명란 채널 소개 한 줄, 색상, 시각 가이드 | - |
+| `output/banner_2560x1440.png` | 배너 (16:9, 최소 2048x1152, 6MB 이하, 글자는 안전 영역 안) | `branding apply --yes --banner` (API) 🧪 |
+| `output/icon_800.png` | 프로필 사진 (98x98 로 표시, 15MB 이하) | ✋ Studio > 맞춤설정 > 브랜딩 (API 미지원) |
+| `output/watermark_150.png` | 동영상 워터마크 (정사각형 150px 이상, 1MB 미만) | ✋ Studio (이 도구는 watermarks.set 미구현) |
+
+- 출력 PNG 는 `branding assets` 로 다시 만들 수 있습니다 (원본 = brand.yaml + `app/branding/channel.py`).
+- `branding apply`: 현재 `brandingSettings` 를 먼저 읽고, 바꿀 필드(설명·키워드·언어·국가)만 덮어쓴 **전체** 값을 보냅니다
+  (공식 문서: 요청에 빠진 속성은 삭제됨). 채널 제목은 현재 값 유지. 기본은 미리보기(`--dry-run` 과 같음), `--yes` 일 때만 적용,
+  적용 후 다시 읽어 실제 반영을 확인하고 결과를 `data/reports/branding_apply_*.json` 에 기록합니다. 권한: `youtube.force-ssl` (15.1 재인증).
+- 영상 설명란 끝(해시태그 앞)에 brand.yaml 의 `video_footer` 한 줄이 붙습니다 (`branding.video_footer: false` 로 끔).
+
+**기존 홈페이지 점검 결과** (`branding check`, URL·파일명 변경 없음)
+- `docs/index.html`, `privacy.html`, `terms.html` 존재·상호 링크 정상.
+- 불일치 발견 → 수정: `auth` 가 이미 요청하던 `yt-analytics.readonly` 와 성과 지표 저장이 개인정보처리방침에 없었음, 이미지 제공자가 Hugging Face 만 적혀 있었음(실제 1순위 Cloudflare).
+  → Analytics·댓글(`youtube.force-ssl`) 범위, 저장 데이터(성과 지표, 댓글 기록), pipeline-state DB 암호화, Cloudflare/Wikipedia 를 기재. 약관에 자동 댓글 고지 추가.
+- OAuth 동의 화면의 앱 정보(이름 `기묘한 기록`, 홈페이지/정책 URL)는 그대로 유효합니다. 새 범위를 추가하면 Google 이 앱 확인을 다시 요구할 수 있습니다(개인 사용 앱은 "확인되지 않은 앱" 경고 후 진행 가능).
+
+### 15.4 영상별 독창성 · 사실성 · 광고 적합성 검수 ✅
+
+**대본 (영상마다 다른 설명)**
+- 전개 형식 6종(`app/ai/story_format.py`): 의문-배경-반전-회수(classic) / 사건 타임라인 재구성 / 증거 비교 / 두 가설 검토 / 역사 기록 해석 / 과학적 설명과 전설 비교.
+  카테고리·사실 여부에 맞는 형식 중 **최근 2개 영상에서 쓰지 않은 것**을 작업 ID 로 결정적으로 고르고, 형식마다 대본이 담아야 할 정보가 다릅니다 (심리테스트는 classic 만).
+- 대본과 함께 `explainer`(확인된 사실, 미확인 주장, 핵심 단서, 가설별 근거·약점, 확정할 수 없는 부분, 타임라인, 출처 간 일치 여부, 이 영상만의 고유한 설명)를 생성합니다.
+  누락은 생성을 막지 않고 검수 warning 으로 기록합니다.
+
+**정보 카드 (`video.info_cards`)**: 확인된 사실 vs 미확인 주장 / 두 가설(근거·약점) / 타임라인(시점 3개 이상) / 핵심 단서 카드를 장면 위에 표시 (영상당 최대 2개, 첫·마지막 장면 제외).
+나레이션에 실제로 나온 항목만, '확인' 라벨은 자료 조사 FACT 와 겹치는 항목만 씁니다. 자막 트랙(Pillow)에 함께 그려 추가 비용·API 가 없습니다.
+지도·인물 관계도는 정확한 위치/관계 데이터가 없어 만들지 않았습니다(잘못된 정보를 그리지 않기 위해).
+
+**AI 이미지 표시 (`video.ai_label`)**: AI 이미지를 쓴 영상은 왼쪽 위에 "AI 생성 이미지 · 재현" 을 작게 표시해 실제 촬영 기록으로 오해되지 않게 합니다.
+
+**검수 항목 추가** (기존 항목은 그대로, `review:`)
+
+| 코드 | 내용 | 기본 | `strict: true` |
+|---|---|---|---|
+| fact_unlinked | FACT 사실이 수집 자료(source_index)에 연결되지 않음 | warning | critical |
+| unsourced_claim | 대본의 연도가 수집 자료에 없음 | warning | critical |
+| unconfirmed_as_fact | 미확인/전설 항목과 같은 내용을 단정적으로 서술 | warning | critical |
+| source_link_missing / invalid | 설명란에 출처 링크 없음 / 형식 이상 | warning | critical / warning |
+| description_unsupported | 설명란에만 있는 연도 | warning | warning |
+| visual_scene_mismatch | AI 이미지가 다른 장면의 프롬프트로 그려짐 | critical | critical |
+| visual_prompt_unrelated | 장면 이미지 설명과 나레이션(영어)이 겹치지 않음 | warning | warning |
+| license_unverified | 자료/BGM 라이선스가 unknown·미확인 | critical | critical |
+| voice_rights_unverified | Edge TTS 상업적 이용 권리 미확인 | warning | critical |
+| explainer_* / unique_insight_missing / format_repetition | 고유한 설명 부족, 같은 형식 반복 | warning | warning |
+| ad_graphic_visual | 이미지 프롬프트에 유혈·시신·훼손 묘사 (광고 적합성 `block`) | critical | critical |
+| ad_graphic_narration | 잔혹 묘사 (실제 피해 사건이면 critical) | warning | critical |
+| unfounded_accusation | 범죄 혐의 단정 (사실이 아닌 주제) | critical | critical |
+| misleading_true_story | 사실이 아닌 주제를 '실화'로 소개 | critical | critical |
+| ad_shock_title / ad_sensitive_topic | 충격 위주 제목, 실제 피해 사건 | warning | warning |
+
+- critical 은 기존과 같이 업로드 금지 → `review_needed`. 광고 적합성은 `pass | warning | review_needed | block` 으로 `review.ad_suitability` 에 기록되며 **수익화 승인·광고 수익을 보장하지 않는 보조 지표**입니다.
+- `upload JOB --approve-review` 로 진행해도 critical 항목은 해결된 것으로 바뀌지 않고 `review.approved_unresolved` 에 남습니다. `python -m app.main review JOB` 로 확인.
+- Gemini 가 대본을 만들었다는 사실만으로 사실 검증이 끝난 것으로 보지 않습니다 (연도·사실-출처 연결을 규칙으로 다시 확인).
+
+### 15.5 Edge TTS 권리 상태 ⚠️
+
+- edge-tts 라이브러리의 오픈소스 라이선스는 **코드** 이용 조건이고, 그 라이브러리가 접속하는 Microsoft Edge '소리 내어 읽기' 서비스(비공개 엔드포인트)의 **음성 출력물을 상업적으로 써도 된다는 허락이 아닙니다**.
+  수익화 영상 사용을 명시적으로 허용하는 공개 약관/서면 답변은 확인하지 못했습니다 → `voice.rights_status: "unverified"`.
+- 일반 모드: 검수 warning (`voice_rights_unverified`), `doctor`·`rights` 에 표시. 엄격 모드(`review.strict: true` 또는 `review.unverified_rights_policy: review_needed`): 업로드 보류.
+- 코드는 자동으로 `verified` 로 바꾸지 않습니다. 확인되면 사람이 `rights_status: verified` + `rights_evidence`(약관 URL·서면 답변 보관 위치) + `rights_checked_at` 을 적어야 인정됩니다 (근거 없으면 unverified 로 처리).
+- 이번 작업에서 음성 녹음·음성 복제·새 TTS 엔진은 추가하지 않았습니다.
+
+### 15.6 보안 · 자동 실행 점검 결과
+
+| 항목 | 결과 / 조치 |
+|---|---|
+| `STATE_DB_KEY` 암호화 | 키가 있으면 AES-256 저장, 복호화·암호화 실패 시 단계가 실패(bash -e)하고 평문으로 조용히 바뀌지 않음. 키가 없으면 평문 저장 → **Actions 경고 추가**. 댓글 기록도 이 DB 에 들어갑니다. Secret 등록 여부는 저장소 설정에서 확인 필요 |
+| 토큰/비밀값 노출 | 토큰 값은 로그에 출력하지 않음(댓글 오류는 코드/사유만 기록). Artifact 는 mp4 만. **`token.json.bak` 이 `.gitignore` 에 없던 문제 수정** (`auth` 가 만드는 백업) |
+| 댓글 재시도 ↔ 업로드 재시도 | 댓글은 영상당 1행 + 등록 전 기존 댓글 확인. 업로드 후 단계 실패 시 재실행해도 재업로드하지 않도록 수정 |
+| Actions ↔ Windows 작업 스케줄러 | DB 가 달라 하루 1개 정책이 서로를 모름 → 동시에 쓰면 하루 2개 업로드 가능. 현재 Windows 작업은 비활성 상태 유지 필요 (코드로 막지 않음) |
+| 하루 1개 정책 | 변경 없음 (`comment` 단계 추가 후에도 작업 상태 `success` 기준 동일) |
+
+### 15.7 2026-10-16 작업 내역
+
+- 기존 테스트 126개 통과 확인 후 구현 → 테스트 **173개 통과** (Windows 11, Python 3.14.8, `PYTHONUTF8=1`).
+  `PYTHONUTF8` 없이 Windows 에서 실행하면 기존 `test_analytics.py::test_report_groups_diagnosis_and_export` 가 cp949 인코딩으로 실패합니다 (이번 변경과 무관, 성장 엔진 범위라 수정하지 않음).
+- `test --offline`: TTS·Whisper·렌더링(정보 카드 2개)·품질 검사·콘텐츠 검수(광고 적합성 pass) 통과, 업로드/댓글 단계는 건너뜀.
+- 실제 Gemini 호출, 업로드, 댓글 등록, 채널 메타데이터 변경은 실행하지 않았습니다 (Mock 테스트만).
 

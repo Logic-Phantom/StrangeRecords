@@ -1,0 +1,61 @@
+# =====================================================================
+# 기묘한 기록 - 채널 브랜딩 원본 (Source of truth)
+# - 이 파일 + app/branding/channel.py(아이콘/배너 생성 코드)가 원본이고,
+#   assets/branding/output/ 의 PNG 는 `python -m app.main branding assets` 로 만든 업로드용 출력물이다.
+# - 채널에 실제로 적용하는 것은 `python -m app.main branding apply --yes` (설명/키워드/언어/국가, 선택: --banner)
+#   프로필 사진(아이콘)·워터마크는 이 도구에서 API 로 바꾸지 않는다 → YouTube Studio 에서 수동 업로드.
+# =====================================================================
+
+channel:
+  name: "기묘한 기록"            # 표시 이름은 API 로 바꾸지 않는다 (channels.update 는 현재 제목을 유지)
+  description: |-
+    기록으로 확인된 사실과 전해지는 이야기를 구분해 소개하는 미스터리·역사 Shorts 채널입니다.
+    미제 사건, 기묘한 현상과 도시전설, 전설의 생물, 잘 알려지지 않은 역사를 다룹니다.
+    영상마다 사실 여부(사실/미확인/전설)와 참고한 자료 출처를 설명란에 적습니다.
+    대본·음성·장면 이미지 제작에 AI(Gemini, Edge TTS, AI 이미지 생성)를 활용하며, AI 이미지는 실제 기록 사진이 아닌 재현 이미지입니다.
+
+    Mystery & hidden-history Shorts that separate documented facts from legends.
+    Each video lists its truth status and sources. Produced with AI assistance; AI images are reconstructions, not archival photos.
+  keywords: ["기묘한기록", "미스터리", "미제사건", "도시전설", "전설의생물", "숨겨진역사", "역사", "Shorts", "mystery"]
+  default_language: "ko"
+  country: "KR"
+
+# 영상 설명란 맨 끝(해시태그 앞)에 붙는 채널 소개 한 줄
+video_footer: "📼 기묘한 기록 · 기록으로 확인된 사실과 전해지는 이야기를 구분해 전합니다."
+
+# 브랜드 색상 (자막 강조색 #FFD43B, 홈페이지 배경 #0F1117 과 같은 값)
+colors:
+  background: "#0F1117"
+  surface: "#1A1D27"
+  ink: "#E6E6E6"
+  accent: "#FFD43B"
+  muted: "#9AA0A6"
+  alert: "#E06C5A"
+
+visual_guide:
+  tone: "어둡고 차분한 기록 보관소 분위기. 과장된 공포·유혈 이미지 사용 금지"
+  typography: "한글 고딕 굵은체 (Windows: 맑은 고딕 Bold / Linux: 나눔고딕 Bold, Noto Sans CJK Bold)"
+  do: ["강조는 노란색(accent) 한 가지", "사실/미확인 라벨은 초록/주황", "AI 이미지에는 'AI 생성 이미지 · 재현' 표시"]
+  dont: ["빨간 피·시신 연출", "'충격/경악' 같은 낚시 문구", "실존 인물 얼굴 합성"]
+
+# 업로드용 출력물 (YouTube 공식 규격, 2026-10-16 확인: support.google.com/youtube/answer/10456525,
+# developers.google.com/youtube/v3/docs/channelBanners/insert)
+assets:
+  icon:
+    file: "icon_800.png"
+    size: [800, 800]           # 98x98 로 표시됨, JPG/GIF(정지)/BMP/PNG, 15MB 이하
+    apply: "manual"            # API 미지원 → Studio > 맞춤설정 > 브랜딩 > 사진
+  banner:
+    file: "banner_2560x1440.png"
+    size: [2560, 1440]         # 16:9, 최소 2048x1152, 6MB 이하, 글자·로고는 안전 영역 1235x338(최소 크기 기준) 안
+    apply: "api"               # channelBanners.insert → channels.update(brandingSettings.image.bannerExternalUrl)
+  watermark:
+    file: "watermark_150.png"
+    size: [150, 150]           # 정사각형, 최소 150x150, 1MB 이하
+    apply: "manual"            # Studio > 맞춤설정 > 브랜딩 > 동영상 워터마크
+
+links:
+  homepage: "https://logic-phantom.github.io/StrangeRecords/"
+  privacy: "https://logic-phantom.github.io/StrangeRecords/privacy.html"
+  terms: "https://logic-phantom.github.io/StrangeRecords/terms.html"
+  source: "https://github.com/Logic-Phantom/StrangeRecords"

@@ -70,11 +70,16 @@ def _hex(color: str) -> tuple[int, int, int]:
     return tuple(int(color[i : i + 2], 16) for i in (0, 2, 4))  # type: ignore[return-value]
 
 
+CARD_LABEL_COLORS = {"확인": (88, 200, 120), "미확인": (240, 160, 60), "근거": (140, 190, 250), "약점": (230, 110, 110)}
+
+
 class SubtitleRenderer:
     def __init__(self, sub_cfg: SubtitleConfig, video_cfg: VideoConfig, fonts_dir: Path):
         self.cfg = sub_cfg
+        self.video_cfg = video_cfg
         self.size = (video_cfg.width, video_cfg.height)
         self.font_path = find_font(sub_cfg, fonts_dir)
+        self.ai_label = False      # build_track 에서 AI 이미지 사용 여부에 따라 설정
 
     # ------------------------------------------------------------ drawing
     def _wrap(self, words: list[str], font: ImageFont.FreeTypeFont, max_width: int) -> list[list[str]]:
@@ -143,16 +148,68 @@ class SubtitleRenderer:
             draw.text((x, top + i * line_h), line_text, font=font, fill=color,
                       stroke_width=self.cfg.en_stroke_width, stroke_fill=stroke_color)
 
-    def _base_frame(self, title: str | None) -> Image.Image:
+    def _draw_ai_label(self, img: Image.Image) -> None:
+        """AI 생성 이미지임을 왼쪽 위에 작게 표시 (실제 촬영 기록으로 오해하지 않도록)."""
+        label = self.video_cfg.ai_label
+        font = _font(self.font_path, label.font_size)
+        draw = ImageDraw.Draw(img)
+        x, y = int(self.size[0] * 0.04), int(self.size[1] * 0.035)
+        pad = 10
+        width = int(font.getlength(label.text))
+        ascent, descent = font.getmetrics()
+        draw.rounded_rectangle((x - pad, y - pad // 2, x + width + pad, y + ascent + descent + pad // 2),
+                               radius=12, fill=(0, 0, 0, 140))
+        draw.text((x, y), label.text, font=font, fill=(235, 235, 235, 255))
+
+    def draw_card(self, img: Image.Image, card) -> None:
+        """정보 카드 (반투명 패널 + 제목 + 라벨/내용 줄). 제목 아래·자막 위 영역 안에서만 그린다."""
+        w, h = self.size
+        cfg = self.video_cfg.info_cards
+        overlay = Image.new("RGBA", self.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        title_font, row_font, label_font = (_font(self.font_path, s) for s in (46, 40, 32))
+        left, right = int(w * 0.07), int(w * 0.93)
+        top = int(h * cfg.position_y)
+        bottom_limit = int(h * (self.cfg.position_y - 0.07))
+        pad, gap = 28, 16
+        label_w = max([int(label_font.getlength(lbl)) for lbl, _ in card.rows] + [0]) + 28
+        row_h = sum(row_font.getmetrics()) + gap
+        title_h = sum(title_font.getmetrics()) + gap + 6
+        rows = card.rows
+        while rows and top + pad * 2 + title_h + row_h * len(rows) > bottom_limit:
+            rows = rows[:-1]
+        bottom = top + pad * 2 + title_h + row_h * len(rows)
+        draw.rounded_rectangle((left, top, right, bottom), radius=26, fill=(8, 10, 16, 190),
+                               outline=(*_hex(self.cfg.highlight_color), 200), width=3)
+        draw.text((left + pad, top + pad), card.title, font=title_font, fill=(*_hex(self.cfg.highlight_color), 255))
+        y = top + pad + title_h
+        for label, text in rows:
+            color = CARD_LABEL_COLORS.get(label, (200, 200, 210))
+            lx = left + pad
+            draw.rounded_rectangle((lx, y + 2, lx + label_w - 10, y + row_h - gap + 2), radius=10, fill=(*color, 230))
+            draw.text((lx + 9, y + 6), label, font=label_font, fill=(10, 10, 10, 255))
+            max_text = right - pad - (lx + label_w + 6)
+            shown = text
+            while len(shown) > 2 and row_font.getlength(shown) > max_text:
+                shown = shown[:-2] + "…"
+            draw.text((lx + label_w + 6, y), shown, font=row_font, fill=(240, 240, 240, 255))
+            y += row_h
+        img.alpha_composite(overlay)
+
+    def _base_frame(self, title: str | None, card=None) -> Image.Image:
         img = Image.new("RGBA", self.size, (0, 0, 0, 0))
         if title and self.cfg.show_title:
             draw = ImageDraw.Draw(img)
             self._draw_block(draw, title, int(self.size[1] * self.cfg.title_position_y), self.cfg.title_font_size,
                              color=self.cfg.highlight_color)
+        if self.ai_label and self.video_cfg.ai_label.enabled:
+            self._draw_ai_label(img)
+        if card is not None:
+            self.draw_card(img, card)
         return img
 
-    def render_chunk(self, chunk: SubtitleChunk, path: Path, title: str | None = None) -> Path:
-        img = self._base_frame(title)
+    def render_chunk(self, chunk: SubtitleChunk, path: Path, title: str | None = None, card=None) -> Path:
+        img = self._base_frame(title, card)
         draw = ImageDraw.Draw(img)
         self._draw_block(draw, chunk.text, int(self.size[1] * self.cfg.position_y), self.cfg.font_size, chunk.highlights)
         if chunk.text_en and self.cfg.english:
@@ -161,9 +218,15 @@ class SubtitleRenderer:
         return path
 
     # -------------------------------------------------------------- track
-    def build_track(self, chunks: list[SubtitleChunk], total_duration: float, work_dir: Path, title: str | None = None) -> Path:
-        """자막 PNG 시퀀스 + 빈 프레임으로 concat 목록(ffconcat)을 만든다."""
+    def build_track(self, chunks: list[SubtitleChunk], total_duration: float, work_dir: Path, title: str | None = None,
+                    cards: list | None = None, ai_label: bool = False) -> Path:
+        """자막 PNG 시퀀스 + 빈 프레임으로 concat 목록(ffconcat)을 만든다.
+
+        cards: 장면 번호별 정보 카드 (그 장면의 자막 프레임에 함께 그림), ai_label: AI 이미지 표시
+        """
         work_dir.mkdir(parents=True, exist_ok=True)
+        self.ai_label = ai_label
+        card_map = {c.scene_number: c for c in cards or []}
         blank = work_dir / "blank.png"
         self._base_frame(title).save(blank, optimize=True)
 
@@ -175,7 +238,7 @@ class SubtitleRenderer:
                 continue
             if start - cursor > 0.001:
                 entries.append((blank, start - cursor))
-            png = self.render_chunk(chunk, work_dir / f"sub_{chunk.index:03d}.png", title)
+            png = self.render_chunk(chunk, work_dir / f"sub_{chunk.index:03d}.png", title, card_map.get(chunk.scene_number))
             entries.append((png, end - start))
             cursor = end
         if total_duration - cursor > 0.001:
@@ -188,5 +251,6 @@ class SubtitleRenderer:
             lines.append(f"duration {duration:.3f}")
         lines.append(f"file '{concat_list_path(entries[-1][0])}'")  # 마지막 duration 적용을 위한 반복
         list_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        logger.info("자막 이미지 %d개 생성 (font: %s)", len(chunks), Path(self.font_path).name)
+        logger.info("자막 이미지 %d개 생성 (font: %s, 정보 카드 %d개, AI 표시 %s)", len(chunks), Path(self.font_path).name,
+                    len(card_map), "on" if ai_label and self.video_cfg.ai_label.enabled else "off")
         return list_file

@@ -105,7 +105,8 @@ def build_english_section(title_en: str, description_en: str, truth_status: str)
 
 
 def compose_description(
-    body: str, truth_status: str, truth_notice: str, credits: str, hashtags: list[str], english: str = ""
+    body: str, truth_status: str, truth_notice: str, credits: str, hashtags: list[str], english: str = "",
+    footer: str = "",
 ) -> str:
     parts = [body.strip()]
     notice = truth_notice.strip() or (TRUTH_LABELS.get(truth_status, "") if truth_status != "FACT" else "")
@@ -113,6 +114,7 @@ def compose_description(
         parts.append(f"ℹ️ {notice}")
     parts.append(english)
     parts.append(credits)
+    parts.append(footer.strip())   # 채널 소개 한 줄 (assets/branding/brand.yaml 의 video_footer)
     parts.append(" ".join(hashtags))
     description = "\n\n".join(p for p in parts if p)
     # YouTube 설명은 5000자 제한, '<' '>' 는 허용되지 않음
@@ -184,7 +186,9 @@ class MetadataGenerator:
                             self.settings.review.max_title_emoji)
         if meta.title_selection:
             logger.info("제목 선택: %s (%s) / 후보 %d개", meta.title, meta.title_strategy, len(meta.title_selection))
-        return finalize_metadata(meta, content, research, assets, bgm)
+        from app.branding.channel import video_footer
+
+        return finalize_metadata(meta, content, research, assets, bgm, footer=video_footer(self.settings))
 
 
 def finalize_metadata(
@@ -193,13 +197,14 @@ def finalize_metadata(
     research: ResearchNotes | None,
     assets: list[AssetInfo],
     bgm: AudioTrackInfo | None,
+    footer: str = "",
 ) -> VideoMetadata:
     hashtags = build_hashtags(meta.hashtags)
     credits = build_credits(research, assets, bgm)
     title = meta.title.strip().replace("<", "").replace(">", "")[:100]
     english = build_english_section(meta.title_en, meta.description_en, content.truth_status)
     description = compose_description(
-        meta.description, content.truth_status, content.truth_notice, credits, hashtags, english=english
+        meta.description, content.truth_status, content.truth_notice, credits, hashtags, english=english, footer=footer
     )
     tags = fit_tags(meta.tags + [h.lstrip("#") for h in hashtags])
     logger.info("Metadata generated: %s / %s", title, meta.title_en or "-")

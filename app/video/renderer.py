@@ -124,12 +124,14 @@ class VideoRenderer:
         work: Path,
         thumbnail_path: Path | None = None,
         hook_seed: str = "",
+        info_cards: list | None = None,
     ) -> RenderResult:
         logger.info("Rendering started")
         work.mkdir(parents=True, exist_ok=True)
         total = round(narration_duration + self.cfg.outro_padding, 3)
         base = self.build_base_video(scenes, assets, timings, total, work, hook_seed=hook_seed)
-        sub_list = self.subtitles.build_track(chunks, total, work / "subs", title=title)
+        sub_list = self.subtitles.build_track(chunks, total, work / "subs", title=title, cards=info_cards,
+                                              ai_label=any(a.generated_by_ai for a in assets))
 
         sr = self.cfg.audio_sample_rate
         fmt = f"aformat=sample_fmts=fltp:sample_rates={sr}:channel_layouts=stereo"
