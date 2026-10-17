@@ -3,6 +3,7 @@
 [1] DB 기존 주제 조회 → [2] Gemini 주제 후보 → [3] 중복 검사 → [4] 최종 주제
 → [5] 자료 조사 → [6] Gemini 대본 → [7] 대본 검증 → [8] Scene 생성
 → [9] Edge TTS 음성 (Scene 별 실제 길이 확정) → [10] Pexels/Pixabay 자료 수집
+→ [10-1] 이미지→영상: 검증된 무료 Image-to-Video API 로 가능한 장면만 AI 영상, 나머지는 FFmpeg 움직임 효과 (실패해도 계속)
 → [11] Whisper 자막 → [12] FFmpeg 영상(첫 장면 Hook 효과 선택) → [13] 품질 검사
 → [14] Gemini 제목 후보/설명/해시태그 → [14-1] 콘텐츠 검수(출처/독창성/라이선스, critical 이면 업로드 금지)
 → [15] YouTube 업로드 + [16] 12:00 예약 공개 → [17] SQLite 기록 + 제작 조건(production_metadata)
@@ -36,10 +37,10 @@ from app.config.settings import Settings
 from app.database.db import Database
 from app.database.models import JobRecord, JobStatus, TopicStatus
 from app.database.repositories import (
-    AssetRepository, JobRepository, ProductionMetadataRepository, StepLogRepository, TopicRepository,
+    AssetRepository, JobRepository, MotionRepository, ProductionMetadataRepository, StepLogRepository, TopicRepository,
     TopicScoreRepository, TrendRepository,
 )
-from app.quality.checker import QualityChecker
+from app.quality.checker import QualityChecker, motion_checks
 from app.quality.content_checker import fix_title, review_content
 from app.research.researcher import Researcher
 from app.schemas import (
@@ -61,11 +62,13 @@ from app.youtube.uploader import YouTubeUploader, plan_publish
 logger = get_logger("pipeline")
 
 STEPS = [
-    "topic", "research", "script", "scenes", "voice", "assets", "subtitles", "render", "quality", "metadata", "review",
+    "topic", "research", "script", "scenes", "voice", "assets", "motion", "subtitles", "render", "quality", "metadata", "review",
     "upload", "comment", "record",
 ]
 # 업로드가 꺼져 있으면 건너뛰는 단계 (comment 는 업로드한 영상에만 의미가 있다)
 UPLOAD_STEPS = ("upload", "comment")
+# 나중에 추가된 단계: 이 단계가 없는 이전 작업도 remake/retry 할 수 있다 (없으면 기존 방식으로 렌더링)
+OPTIONAL_STEPS = ("motion",)
 
 
 class QualityCheckFailed(NonRetryableError):
@@ -143,6 +146,9 @@ class DailyPipeline:
 
     def _timings(self, ctx: JobContext) -> list[SceneTiming]:
         return [SceneTiming(**t) for t in ctx.state["narration"]["timings"]]
+
+    def _motion_repo(self) -> MotionRepository:
+        return MotionRepository(self.db, self.settings.app.timezone)
 
     def _bgm(self, ctx: JobContext) -> AudioTrackInfo | None:
         data = ctx.state.get("render", {}).get("bgm")
@@ -408,6 +414,39 @@ class DailyPipeline:
         self.assets_repo.replace_for_job(ctx.id, assets)
         write_json(self.paths.sources / f"{ctx.id}_assets.json", ctx.state["assets"])
 
+    def step_motion(self, ctx: JobContext) -> None:
+        """기존 AI 이미지 → 짧은 움직임 영상 (video_motion). 이 단계는 어떤 경우에도 작업을 실패시키지 않는다.
+
+        - 검증된 무료 provider 가 없거나 무료 한도/크레딧 오류가 나면 외부 호출을 멈추고 나머지는 FFmpeg 움직임 효과
+        - assets.require_ai_image(정지 이미지 확보 조건)와 별개: 이미지가 있으면 영상 변환 실패는 이미지 실패가 아니다
+        """
+        cfg = self.settings.video_motion
+        if not cfg.enabled:
+            ctx.state["motion"] = {"enabled": False}
+            logger.info("이미지→영상 비활성 (video_motion.enabled=false) → 기존 Ken Burns 렌더링")
+            return
+        if "render" in ctx.completed:
+            # 이전 버전에서 이미 렌더링까지 끝난 작업을 재개하는 경우: 다시 렌더링하지 않으므로 외부 호출도 하지 않는다
+            ctx.state.setdefault("motion", {"enabled": False, "skipped": "이미 렌더링된 작업"})
+            return
+        from app.video_motion.motion_service import MotionService, fallback_plan, log_summary
+        from app.video_motion.provider_factory import build_motion_providers
+
+        content = self._content(ctx)
+        assets = self._assets(ctx)
+        draft = ctx.state.get("draft") or {}
+        try:
+            service = MotionService(self.settings, self._motion_repo(), build_motion_providers(self.settings))
+            result = service.plan(ctx.id, content.scenes, assets, self._timings(ctx),
+                                  key_clues=(draft.get("explainer") or {}).get("key_clues") or [],
+                                  external=not self.options.offline)
+        except Exception as exc:
+            logger.warning("이미지→영상 단계 오류 → 모든 장면 FFmpeg 움직임 효과로 진행: %s: %s", type(exc).__name__, exc)
+            result = fallback_plan(content.scenes, assets, f"서비스 오류: {type(exc).__name__}")
+        ctx.state["motion"] = result
+        write_json(self.paths.sources / f"{ctx.id}_motion.json", result)
+        log_summary(result)
+
     def _ensure_english(self, ctx: JobContext, content: ShortsContent) -> None:
         """영어 자막이 빠진 Scene 을 번역해 채운다. 실패해도 한국어 자막만으로 계속 제작한다."""
         if not self.settings.subtitle.english or self.options.offline or not missing_english(content.scenes):
@@ -460,12 +499,14 @@ class DailyPipeline:
         chunks = [SubtitleChunk(**c) for c in ctx.state["subtitles"]["chunks"]]
         out = self.paths.videos / f"{ctx.id}.mp4"
         cards = self._info_cards(ctx, content)
+        motion = ctx.state.get("motion") or {}
 
         def _render():
             return renderer.render(
                 content.scenes, self._assets(ctx), self._timings(ctx), Path(ctx.state["narration"]["path"]),
                 ctx.state["narration"]["duration"], chunks, bgm, content.title, out, self.work_dir(ctx),
                 thumbnail_path=self.paths.thumbnails / f"{ctx.id}.jpg", hook_seed=ctx.id, info_cards=cards,
+                motion=motion if motion.get("enabled") else None,
             )
 
         result = retry_call(_render, step="FFmpeg Render", max_attempts=2, delays=self.settings.retry.delays)
@@ -475,7 +516,15 @@ class DailyPipeline:
             "bgm": bgm.model_dump() if bgm else None, "sfx": result.sfx_used,
             "hook_effect": result.hook_effect,
             "info_cards": [c.to_dict() for c in cards],
+            "motion": {str(k): v for k, v in (result.motion or {}).items()},
         }
+        if motion.get("enabled"):
+            from app.video_motion.motion_service import log_summary
+
+            used = Counter(v.get("source") for v in (result.motion or {}).values())
+            log_summary(motion, render=f"{result.video_path.name} ({result.duration:.1f}초, "
+                                       f"AI 영상 {used.get('ai_video', 0)} / FFmpeg 움직임 {used.get('ffmpeg', 0)}"
+                                       f" / 기존 효과 {used.get('legacy', 0)})")
         self.jobs.update(ctx.id, video_path=str(result.video_path))
 
     def _info_cards(self, ctx: JobContext, content: ShortsContent) -> list:
@@ -495,9 +544,17 @@ class DailyPipeline:
         return cards
 
     def step_quality(self, ctx: JobContext) -> None:
+        render = ctx.state["render"]
         report = QualityChecker(self.settings.quality).check(
-            Path(ctx.state["render"]["video_path"]), Path(ctx.state["subtitles"]["srt"])
+            Path(render["video_path"]), Path(ctx.state["subtitles"]["srt"]), expected_duration=render.get("duration"),
         )
+        extra = motion_checks(ctx.state.get("motion"), render.get("motion"),
+                              [s.scene_number for s in self._content(ctx).scenes])
+        if extra:
+            report.checks += extra
+            report.passed = all(c.passed for c in report.checks)
+            for c in extra:
+                (logger.info if c.passed else logger.error)("이미지→영상 검사 %s: %s (%s)", c.name, "OK" if c.passed else "FAIL", c.detail)
         ctx.state["quality"] = report.to_dict()
         if not report.passed:
             raise QualityCheckFailed("품질 검사 실패 → 업로드 금지: " + ", ".join(f"{c.name}({c.detail})" for c in report.failures()))
@@ -711,6 +768,8 @@ def _production_fields(settings: Settings, state: dict, content: ShortsContent, 
             "loop_note": draft.get("loop_note"), "hook_effect": hook, "topic_strategy": sel.get("strategy"),
             "review_issues": [i.get("code") for i in review.get("issues", [])],
             "story_format": draft.get("story_format"),
+            "video_motion": (state.get("motion") or {}).get("summary"),
+            "motion_sources": dict(Counter(v.get("source") for v in (render.get("motion") or {}).values())),
         },
     }
 

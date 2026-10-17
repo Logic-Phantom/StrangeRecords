@@ -422,7 +422,10 @@ def cmd_remake(settings: Settings, args: argparse.Namespace) -> int:
         return 2
     keep = STEPS[: STEPS.index(args.from_step)]
     completed = [s for s in job.completed_steps if s in keep]
-    missing = [s for s in keep if s not in completed]
+    from app.pipeline.daily_pipeline import OPTIONAL_STEPS
+
+    # 나중에 추가된 단계(motion)가 없는 이전 작업도 다시 만들 수 있다
+    missing = [s for s in keep if s not in completed and s not in OPTIONAL_STEPS]
     if missing:
         print(f"{args.from_step} 이전 단계가 완료되지 않았습니다: {missing}")
         return 2
@@ -584,6 +587,16 @@ def cmd_doctor(settings: Settings, args: argparse.Namespace) -> int:
     line("트렌드", settings.trends.enabled,
          f"wikipedia={'on' if settings.trends.wikipedia.enabled else 'off'}, youtube={'on' if settings.trends.youtube.enabled else 'off'},"
          f" google_trends={'on' if settings.trends.google_trends.enabled else 'off(알파)'}", required=False)
+    vm = settings.video_motion
+    from app.video_motion.base import FreeStatus
+    from app.video_motion.provider_factory import build_motion_providers
+
+    motion_providers = build_motion_providers(settings) if vm.enabled else []
+    verified = [p.name for p in motion_providers if p.free_status == FreeStatus.VERIFIED_FREE and p.configured]
+    line("이미지→영상", True,
+         ("off" if not vm.enabled else
+          f"무료 검증 provider: {', '.join(verified) or '없음 → FFmpeg 움직임 효과만 (외부 호출 없음)'}"
+          f" / 작업당 {vm.max_requests_per_job}회·하루 {vm.max_requests_per_day}회"), required=False)
     line("Hook 효과", True, f"{settings.video.hook_effect.preset} ({'on' if settings.video.hook_effect.enabled else 'off'})", required=False)
     line("Gemini model", True, settings.gemini.model)
     line("Mode", True, settings.app.mode)

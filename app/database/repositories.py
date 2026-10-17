@@ -426,6 +426,70 @@ class CommentRepository:
         return [r["comment_text"] for r in rows]
 
 
+class MotionRepository:
+    """video_motion_clips (장면별 이미지→영상 결과) / video_motion_requests (실제 외부 요청, 하루 한도 계산)."""
+
+    CLIP_COLUMNS = (
+        "priority", "image_path", "image_sha256", "video_path", "provider", "model", "cache_key", "requested_at",
+        "status", "success", "clip_seconds", "latency_s", "error_code", "stop_reason", "quota_limited",
+        "fallback_applied", "fallback_motion", "cache_reused",
+    )
+
+    def __init__(self, db: Database, tz: str = "Asia/Seoul"):
+        self.db = db
+        self.tz = tz
+
+    def upsert_clip(self, job_id: str, scene_number: int, **fields: Any) -> None:
+        data = {k: fields.get(k) for k in self.CLIP_COLUMNS}
+        for key in ("success", "quota_limited", "fallback_applied", "cache_reused"):
+            data[key] = int(bool(data.get(key)))
+        data["status"] = data.get("status") or "fallback_motion"
+        now = now_iso(self.tz)
+        cols = ["job_id", "scene_number", *data, "created_at", "updated_at"]
+        updates = ", ".join(f"{c} = excluded.{c}" for c in [*data, "updated_at"])
+        with self.db.session() as conn:
+            conn.execute(
+                f"INSERT INTO video_motion_clips ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))}) "
+                f"ON CONFLICT(job_id, scene_number) DO UPDATE SET {updates}",
+                (job_id, scene_number, *data.values(), now, now),
+            )
+
+    def clips_for_job(self, job_id: str) -> dict[int, dict[str, Any]]:
+        with self.db.session() as conn:
+            rows = conn.execute("SELECT * FROM video_motion_clips WHERE job_id = ? ORDER BY scene_number", (job_id,)).fetchall()
+        return {r["scene_number"]: dict(r) for r in rows}
+
+    def successful_by_key(self, key: str) -> list[dict[str, Any]]:
+        with self.db.session() as conn:
+            rows = conn.execute(
+                "SELECT * FROM video_motion_clips WHERE cache_key = ? AND success = 1 ORDER BY updated_at DESC", (key,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def add_request(self, job_id: str, scene_number: int, provider: str, model: str, outcome: str,
+                    http_status: int | None = None, latency_s: float | None = None) -> None:
+        now = now_iso(self.tz)
+        with self.db.session() as conn:
+            conn.execute(
+                """INSERT INTO video_motion_requests (job_id, scene_number, provider, model, requested_at, request_date,
+                                                      outcome, http_status, latency_s)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (job_id, scene_number, provider, model, now, now[:10], outcome, http_status, latency_s),
+            )
+
+    def requests_on(self, date: str, job_id: str | None = None) -> int:
+        query, params = "SELECT COUNT(*) FROM video_motion_requests WHERE request_date = ?", [date]
+        if job_id:
+            query += " AND job_id = ?"
+            params.append(job_id)
+        with self.db.session() as conn:
+            return int(conn.execute(query, params).fetchone()[0])
+
+    def requests_for_job(self, job_id: str) -> int:
+        with self.db.session() as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM video_motion_requests WHERE job_id = ?", (job_id,)).fetchone()[0])
+
+
 def uploaded_jobs(db: Database, since_iso: str | None = None) -> list[JobRecord]:
     """YouTube 에 올라간 작업 (성과 수집 대상)."""
     query = "SELECT * FROM jobs WHERE youtube_video_id IS NOT NULL AND youtube_video_id != ''"

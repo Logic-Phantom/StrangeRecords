@@ -6,6 +6,8 @@
 
 2026-10-16 부터 **수익화 준비 기능**이 추가되었습니다: 공개 영상 주제 맞춤 댓글(등록/고정 상태 분리), 채널 브랜딩 자산·일관성 점검, 영상별 전개 형식·정보 카드, 사실성·출처·장면 일치·광고 적합성 검수, Edge TTS 권리 상태 표시 (→ [15절](#15-수익화-준비-댓글--브랜딩--검수--권리)).
 
+2026-10-17 부터 **이미지 → 영상 변환**이 추가되었습니다: 검증된 무료 Image-to-Video API 로 가능한 장면만 AI 영상으로 만들고, 나머지(무료 한도 도달·미검증·실패)는 기존 AI 이미지에 FFmpeg 움직임 효과(안개·먼지·조명·패럴랙스 등)로 완성합니다. 현재 공식 문서로 무료 조건을 모두 확인한 API 가 없어 **외부 호출은 0회**이고 FFmpeg 움직임 효과만 동작합니다 (→ [16절](#16-이미지--영상-무료-image-to-video--ffmpeg-움직임-효과)).
+
 - AI 엔진: **Google Gemini API 하나만 사용** (기본 `gemini-3.5-flash`, 과부하 시 자동 대체 모델 전환, 모델명은 `config.yaml` 한 곳에서 관리)
 - 음성: Edge TTS (무료) · 시각자료: **대본 기반 AI 장면 이미지: Cloudflare Workers AI / Hugging Face SDXL** (Gemini 이미지는 무료 티어 한도 0 이라 비활성) → Pexels / Pixabay (무료 API) · 자막: faster-whisper (로컬) · 편집: FFmpeg · DB: SQLite
 - 출력: **1080x1920 · 9:16 · 30fps · H.264 · AAC · MP4**, 한국어 40~60초, **한국어 + 영어 자막 / 한국어 + 영어 설명란** (해외 시청자용)
@@ -23,6 +25,7 @@
 → [7] 대본 검증(길이/금지표현/사실여부 고지 + 반복/단정/최근 대본 유사도/루프 품질) → [8] Gemini Scene 분할 + 영어 검색어
 → [9] Edge TTS (Scene 별 합성 → 실제 길이 확정, 길면 속도 자동 조정)
 → [10] AI 장면 이미지(Scene 별 visual_prompt: Gemini → Hugging Face) → Pexels → Pixabay → 로컬 → 자체 그래픽 순으로 자료 수집
+→ [10-1] 이미지→영상(motion): 검증된 무료 Image-to-Video API 로 가능한 장면만 AI 영상, 나머지는 FFmpeg 움직임 효과 (실패해도 계속)
 → [11] faster-whisper 단어 타이밍 + 대본 텍스트 정렬 → Shorts 자막
 → [12] FFmpeg: 9:16 crop / Ken Burns / 첫 장면 Hook 효과 / 전환 / 자막 / BGM 덕킹 / 효과음 / -14 LUFS
 → [13] 품질 검사(실패 시 업로드 금지) → [14] Gemini 제목 후보 3개·설명·해시태그 (+ 출처 자동 표기) → 제목 평가/선택
@@ -71,6 +74,7 @@ bash scripts/setup_macos.sh
 | `YOUTUBE_API_KEY` | 선택 | 무료 (Data API 할당량) | 트렌드 신호 조회용. 없으면 `token.json`(youtube.readonly)으로 조회 |
 | YouTube Analytics 권한 | 성과 수집 시 | 무료 | Key 없음. Cloud Console 에서 **YouTube Analytics API** 사용 설정 + `auth` 재인증 (14.2절) |
 | `GOOGLE_TRENDS_API_KEY` | - | - | 공식 API 는 **알파(승인자만)** → 승인 전에는 사용 안 함 |
+| `ZHIPU_API_KEY` | - | 미검증 | 智谱 CogVideoX-Flash(이미지→영상). 무료 조건 미검증이라 **키를 넣어도 호출하지 않음** (16절) |
 | Edge TTS | - | 무료, Key 불필요 | - |
 | Wikipedia / Wikimedia Pageviews | - | 무료, Key 불필요 | 자료 조사 + 관심도 신호 |
 
@@ -183,6 +187,7 @@ youtube:
    | `STATE_DB_KEY` | **권장** — `pipeline-state` 브랜치의 DB 를 AES-256 으로 암호화하는 비밀번호 (아래 주의) |
    | `YOUTUBE_API_KEY` | 선택 — 트렌드 신호용 (없으면 `YOUTUBE_TOKEN_JSON` 사용) |
    | `GOOGLE_TRENDS_API_KEY` | 선택 — Google Trends 알파 승인 시에만 |
+   | `ZHIPU_API_KEY` | 선택 — 이미지→영상 CogVideoX-Flash (현재 미검증이라 넣어도 호출 안 함, 16절) |
 2. **Actions → Daily Shorts → Run workflow** 로 수동 실행해 확인 (`test` = 제작만, `today` = 제작 + 업로드, `remake` = 완료된 작업(`job`, 비우면 오늘 것)을 `from_step` 단계부터 다시 제작 + 업로드)
 - 주제 이력/하루 1개 정책/성과 이력 DB(`data/database.sqlite`)는 실행마다 `pipeline-state` 브랜치에 저장되어 다음 실행이 이어 씁니다.
   - ⚠️ **공개 저장소**이므로 이 DB 는 누구나 내려받을 수 있습니다. 성과 수집을 켜면 평균 시청 비율·구독 증감 같은 **비공개 Analytics 지표**가 DB 에 들어가므로 `STATE_DB_KEY` Secret 을 등록하세요 → 다음 실행부터 `database.sqlite.enc`(AES-256, openssl)로 저장하고 평문 파일은 브랜치에서 지웁니다 (이전 커밋 이력의 평문 DB 에는 성과 데이터가 없음). Secret 을 지우면 다시 평문으로 저장합니다. 키를 잃어버리면 DB 를 복원할 수 없습니다.
@@ -235,6 +240,9 @@ app/
 │            audio_library.py, synth_audio.py
 ├── subtitle/whisper.py, chunker.py
 ├── video/   ffmpeg.py, scenes.py, subtitle_renderer.py, renderer.py, hook_effect.py (첫 3초 효과)
+├── video_motion/ base.py (Provider 인터페이스·오류 분류), providers.py (CogVideoX-Flash Adapter), provider_factory.py (조사 기록),
+│            free_quota_guard.py (무료 한도 가드), motion_service.py (장면별 소스 결정), cache.py, result_validator.py,
+│            ffmpeg_fallback.py (움직임 효과 / AI 영상 길이 맞춤)
 ├── quality/ checker.py (영상 규격), content_checker.py (콘텐츠 검수/업로드 게이트), ad_suitability.py (광고 적합성)
 ├── youtube/ auth.py, uploader.py, comments.py (자동 댓글·고정 상태)
 ├── branding/channel.py         # 브랜드 자산 생성 / 일관성 점검 / 채널 메타데이터 미리보기·적용
@@ -318,6 +326,9 @@ python -m app.main test --offline    # 실제 TTS/Whisper/FFmpeg 로 59초 샘�
 | 전개 형식 6종 / 고유 설명(explainer) / 정보 카드 / AI 이미지 표시 | ✅ 구현 + 테스트 + `test --offline` 렌더링 확인 / 실제 Gemini 대본으로는 미검증 |
 | 사실·출처·장면 일치·라이선스·광고 적합성 검수 | ✅ 구현 + 테스트 (규칙 기반 보조 검사, 수익화 보장 아님) |
 | Edge TTS 상업적 이용 권리 | ⚠️ `unverified` 표시 + 검수 경고 (확인은 사람이 해야 함) |
+| 이미지→영상: FFmpeg 움직임 효과 9종 / 우선순위 / 품질 검사 | ✅ 구현 + 테스트 + 실제 FFmpeg 렌더링 확인 (Windows, imageio-ffmpeg 7.1) / GitHub Actions FFmpeg 는 첫 실행에서 확인 필요 |
+| 이미지→영상: 무료 한도 가드·캐시·재사용·오류 분류 | 🧪 구현 + Mock 테스트 (실제 API 호출 없음) |
+| 이미지→영상: 무료 Image-to-Video API | ⏸ **검증된 무료 API 없음** (2026-10-17 조사) → 외부 호출 비활성. CogVideoX-Flash 는 Adapter 만 구현, 미검증 |
 
 ## 13. 작업 내역
 
@@ -734,3 +745,130 @@ YouTube Data API 의 `comments`/`commentThreads` 리소스에는 고정 속성·
 - `test --offline`: TTS·Whisper·렌더링(정보 카드 2개)·품질 검사·콘텐츠 검수(광고 적합성 pass) 통과, 업로드/댓글 단계는 건너뜀.
 - 실제 Gemini 호출, 업로드, 댓글 등록, 채널 메타데이터 변경은 실행하지 않았습니다 (Mock 테스트만).
 
+## 16. 이미지 → 영상 (무료 Image-to-Video + FFmpeg 움직임 효과)
+
+2026-10-17 추가. 목표는 **모든 장면을 AI 영상으로 강제하는 것이 아니라**, 추가 비용 0원 원칙으로 무료 사용량 안에서 만들 수 있는 장면만 AI 영상으로 바꾸고 나머지는 FFmpeg 로 완성하는 것입니다.
+기존 단계(대본·이미지 생성·음성·Whisper 자막·BGM/효과음·업로드·하루 1개 정책·OAuth)는 바꾸지 않았고, `assets` 와 `subtitles` 사이에 `motion` 단계 하나를 추가했습니다.
+
+### 16.1 구조
+
+```text
+[10] 기존 AI 장면 이미지 (Cloudflare 등, 원본은 덮어쓰지 않음)
+→ [10-1] motion 단계 (app/video_motion/)
+   1) 장면 우선순위: 첫 장면 Hook(1) → 핵심 단서·증거(2, 대본 explainer.key_clues 와 나레이션) → 반전·결론(3) → 배경(4)
+      + 장면별 FFmpeg 움직임 종류 (visual_prompt·나레이션 단어로 결정, Gemini 추가 호출 없음, 같은 효과 연속 금지)
+   2) 재사용: 같은 작업의 이전 실행 결과(SQLite video_motion_clips) → 캐시 파일 (검증 통과한 것만)
+   3) FreeQuotaGuard 가 허락할 때만, 우선순위 순서로 외부 Image-to-Video 요청
+   4) 결과 검증 (영상 시그니처·손상·길이·해상도·검은 화면) → 실패하면 정상 영상으로 쓰지 않음
+→ [12] 렌더링: AI 영상 장면 = 9:16 crop + 장면 길이에 맞춤(최대 1.6배 느리게 + 마지막 프레임 유지)
+               나머지 장면 = FFmpeg 움직임 효과 → 그래도 실패하면 기존 Ken Burns
+               첫 장면 Hook 효과·xfade 전환·자막·BGM 덕킹·효과음·-14 LUFS 는 그대로
+→ [13] 품질 검사 (기존 항목 + 아래 16.6)
+```
+
+| 파일 | 책임 |
+|---|---|
+| `base.py` | `ImageToVideoProvider` 인터페이스, `FreeStatus`(verified_free / unverified / paid), HTTP 오류 분류 `classify_http_error` |
+| `providers.py` | `ZhipuCogVideoFlashProvider` (비동기 생성 → 제한 시간 내 상태 확인 → 다운로드). 현재 `unverified` |
+| `provider_factory.py` | 설정 → provider 목록, 후보 서비스 조사 기록(`RESEARCH`). 유료 provider 는 만들지 않음 |
+| `free_quota_guard.py` | `FreeQuotaGuard`: 무료 검증·작업당/하루 요청 수·길이 한도, 비용 오류 시 중단, 유료 설정 강제 무시 |
+| `motion_service.py` | `MotionService`: 우선순위·재사용·요청·오류 처리·DB 기록·요약 로그 |
+| `cache.py` | 캐시 키(이미지 SHA-256 + 프롬프트 + provider/모델 + 길이 + 해상도/fps + 모델 파라미터), `output/motion_cache/` |
+| `result_validator.py` | 결과 영상 검증 |
+| `ffmpeg_fallback.py` | 움직임 효과 9종, AI 영상 길이 맞춤 |
+
+### 16.2 무료 Image-to-Video API 조사 (기준일 2026-10-17, 공식 문서)
+
+| 후보 | 상태 | 확인 내용 | 공식 URL |
+|---|---|---|---|
+| 智谱 BigModel **CogVideoX-Flash** | **미검증 (unverified)** → 호출 안 함 | "免费视频生成模型"(무료 영상 생성 모델) 표기. 이미지(URL/base64)+프롬프트, `POST /api/paas/v4/videos/generations` → `GET /api/paas/v4/async-result/{id}`. **UNKNOWN**: 무료 요청 한도(일/분), 한도 초과 시 동작, 해외 전화번호 가입·실명 인증, 결과물 상업적 이용 조건, 영상 길이(flash 는 duration 파라미터 없음), 영상 URL 보관 기간, 중국 외 서버(GitHub Actions) 호출 허용 | [모델](https://docs.bigmodel.cn/cn/guide/models/free/cogvideox-flash) · [생성 API](https://docs.bigmodel.cn/api-reference/模型-api/视频生成异步) · [결과 조회](https://docs.bigmodel.cn/api-reference/模型-api/查询异步结果) |
+| Hugging Face Inference Providers (`image_to_video`) | **유료** | 무료 사용자 월 크레딧 **None**, 크레딧 구매 후 종량제 (PRO $2/월). 현재 토큰은 이미 402. Custom Provider Key 는 provider 가 직접 과금 → 사용 금지 | [pricing](https://huggingface.co/docs/inference-providers/pricing) |
+| Cloudflare Workers AI | **비활성 (영상 모델 없음)** | 모델 카탈로그에 image-to-video/영상 생성 없음. (무료 한도 초과 시 오류로 거절, 00:00 UTC 초기화) | [models](https://developers.cloudflare.com/workers-ai/models/) · [pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/) |
+| Google Gemini API **Veo 3.1** | **유료** | 무료 티어 "Not available", 초당 $0.05~$0.40 | [pricing](https://ai.google.dev/gemini-api/docs/pricing) |
+| Alibaba Model Studio Wan I2V | **유료 (제외)** | 모델당 1회성 무료 50초(90일)지만 활성화에 결제 정보 등록 필요, "Free Quota Only" 기본 꺼짐 | [free quota](https://www.alibabacloud.com/help/en/model-studio/new-free-quota) |
+| Replicate / fal.ai / Runway / Luma / Pollinations / SiliconFlow / Together | **유료** | 공식 무료 사용량 없음 또는 금액 미기재, 결제/크레딧 구매 필요 | [Replicate](https://replicate.com/pricing) · [fal](https://fal.ai/pricing) |
+| NVIDIA API Catalog (Stable Video Diffusion) | **미검증** | 체험(trial) 약관이 테스트·평가 용도로 제한된다는 비공식 자료만 있고 공식 약관은 확인 못 함 → 수익화 채널에 부적합 | - |
+
+- **결론: 무료 조건(공식 무료 사용량 / 무료 범위로 제한 가능 / 초과 시 과금 없이 거절 / 결제 정보 불필요)을 모두 공식 자료로 확인한 API 는 없습니다.** 그래서 외부 호출은 비활성 상태이고, 모든 장면이 FFmpeg 움직임 효과로 만들어집니다.
+- 웹 UI 무료 이용은 API 무료 이용과 같지 않습니다. 위 표는 API 기준입니다.
+
+**무료 provider 를 나중에 켜는 방법** (사람이 확인해야 함): 위 UNKNOWN 항목을 공식 자료(약관·가격·한도 문서, 서면 답변)로 확인 → `app/video_motion/providers.py` 의 해당 클래스 `free_status = FreeStatus.VERIFIED_FREE`, `checked_at`, `official_urls`, 공식 하루 한도(`official_free_requests_per_day`, 알면 가드가 그 절반만 사용)를 코드로 수정 → `config.yaml` 의 provider `enabled: true` + GitHub Secret 등록. **설정 파일만으로는 미검증·유료 provider 를 켤 수 없습니다** (실수로 과금되지 않도록).
+
+### 16.3 설정 (`config.yaml` → `video_motion`)
+
+| 키 | 기본 | 의미 |
+|---|---|---|
+| `enabled` | true | false 면 이 단계 전체를 끄고 예전 Ken Burns 렌더링 (외부 호출 없음) |
+| `free_only` / `paid_fallback_enabled` | true / false | **코드에서 강제** (다른 값을 넣어도 무시하고 경고) |
+| `max_requests_per_job` / `max_requests_per_day` | 8 / 8 | 실제로 보낸 요청 수(실패 포함). 하루 수는 `video_motion_requests` 테이블(KST)로 계산 → pipeline-state DB 로 클라우드 실행 사이에도 유지. 8회가 무료 8회를 보장한다는 뜻이 아님 |
+| `max_clip_seconds` / `max_total_video_seconds_per_job` | 4 / 32 | 장면당 요청 길이 / 작업당 합계 |
+| `max_consecutive_transient_failures` | 2 | 일시 오류 연속 횟수 → provider 비활성 |
+| `max_retries_per_scene` / `retry_waits` | 1 / [10, 30] | 일시 오류·명시적 속도 제한만 재시도 |
+| `quota_stop_fallback` | true | 무료 한도/크레딧/결제 오류 → 다른 provider 로 넘어가지 않고 이번 작업 외부 호출 **전체** 중단 |
+| `cache_enabled` | true | 같은 입력이면 다시 요청하지 않음 |
+| `fallback_motion` | true | AI 영상 없는 장면에 움직임 효과 (false: 기존 Ken Burns) |
+| `providers` | CogVideoX-Flash (`enabled: false`) | provider 별 모델·타임아웃·상태 확인 시간·파라미터 |
+
+GitHub Secrets: 현재 **추가할 필수 Secret 없음**. `ZHIPU_API_KEY` 는 선택이며 미검증 상태라 등록해도 호출하지 않습니다. 비밀 키는 코드·`config.yaml` 에 넣지 않고 Secrets/`.env` 로만 주입합니다.
+
+**안전하게 끄는 방법**: ① 외부 API 만 끄기 → provider `enabled: false` (기본값) 또는 GitHub Secret 삭제 ② 단계 전체 끄기 → `video_motion.enabled: false`. 어느 쪽이든 제작·업로드는 그대로입니다.
+
+### 16.4 무료 한도 도달 시 동작 (예: 장면 8개, 4번째 요청에서 한도 초과)
+
+```text
+Scene 1~3: AI 영상 생성 성공 → output/motion_cache 에 저장 + SQLite 기록
+Scene 4  : 429(할당량) → 즉시 외부 호출 중단, quota_limited 기록 (같은 요청 재시도 없음, 다른 provider 탐색 없음)
+Scene 5~8: 요청 안 함 → 기존 AI 이미지 + FFmpeg 움직임 효과
+→ 8개 장면으로 렌더링 → 기존 품질 검사 → 기존 업로드 정책대로 진행
+```
+
+| 응답 | 분류 | 동작 |
+|---|---|---|
+| 429 + 할당량/크레딧 단어, 또는 **무엇인지 불명확한 429** | quota_exceeded | 이번 작업 외부 호출 전체 중단 |
+| 429 + 속도 제한 단어(또는 Retry-After)만 | rate_limited | 요청 수 한도 안에서 1회 재시도 |
+| 402, 크레딧 소진·결제 필요·잔액 부족(余额/欠费 포함) 본문 | billing_required | 즉시 중단 |
+| 401 / 403 | auth_error | 무료 한도로 단정하지 않고 provider 비활성 + 기록, 재시도 없음 |
+| 400 / 404 / 422 | invalid_request | provider 비활성 |
+| 5xx / 타임아웃 / 네트워크 / 결과 대기 시간 초과 | transient | 1회 재시도, 연속 2회면 provider 비활성 |
+| 영상 아님·손상·짧음·검은 화면 | invalid_result | 그 장면만 대체 (캐시에서 삭제) |
+
+- 성공한 AI 영상은 삭제·재생성하지 않습니다. 재실행(`retry`, Actions 의 5/10분 뒤 재시도)하면 같은 작업의 기록과 캐시 파일을 검증해 재사용하고, 남은 장면만 (한도가 남아 있을 때) 요청합니다.
+- GitHub Actions 는 실행마다 새 서버라 캐시 **파일**은 같은 실행 안의 재시도에서만 남습니다 (요청 수 기록은 DB 로 유지). Artifact 로 올리지 않아 저장 공간을 늘리지 않습니다.
+- `motion` 단계는 어떤 오류도 작업 실패로 올리지 않습니다 (서비스 오류 시 전 장면 FFmpeg 효과). `assets.require_ai_image`(정지 AI 이미지 확보 조건)의 의미는 바꾸지 않았고, 영상 변환 실패는 이미지 확보 실패가 아닙니다.
+- 이미 렌더링까지 끝난 이전 작업을 재개할 때는 이 단계를 건너뜁니다 (외부 호출 없음). `remake` 는 `motion` 기록이 없는 이전 작업도 다시 만들 수 있습니다.
+
+### 16.5 FFmpeg 움직임 효과 (외부 API 없음, GPU 불필요)
+
+| 종류 | 표현 | 주로 고르는 장면 (visual_prompt·나레이션 단어) |
+|---|---|---|
+| `slow_zoom_in` / `slow_zoom_out` | 천천히 다가가기/멀어지기 (기존 Ken Burns 의 65%) | 첫 장면 Hook, 단서·증거·얼굴·지도 / 마지막 장면 |
+| `pan_left` / `pan_right` | 느린 좌우 시점 이동 | 바다·사막·산·해안·지평선 |
+| `parallax` | 가운데(타원 마스크)와 바깥이 반대로 약 20px 이동하는 2층 패럴랙스 | 숲·복도·터널·골목·마을 |
+| `fog_overlay` | 흐르는 안개 텍스처 screen 합성 (28%) | 안개·연기·늪·구름 |
+| `light_flicker` | 0.5~2.3Hz 의 느린 밝기 변화 ±5% (빠른 점멸 없음) | 촛불·등불·횃불·번개 |
+| `dust_overlay` | 천천히 떠다니는 먼지 입자 | 먼지·유적·고문서·폐허·고대 |
+| `none` | 움직임 없음 (Scene `effect: static`) | - |
+
+- 강한 글리치·흔들림은 쓰지 않습니다 (첫 3초 Hook 효과만 기존대로). 텍스처·마스크는 작업 폴더에 Pillow 로 한 번 만들고, 원본 이미지는 읽기만 합니다.
+- 실측 (Windows, imageio-ffmpeg 7.1, 3초 장면 1개): 줌/팬 약 2초, 먼지 3.6초, 패럴랙스 4.3초, 안개 4.5초.
+
+### 16.6 기록 · 품질 검사
+
+- SQLite 마이그레이션 v3 (기존 테이블 변경 없음):
+  `video_motion_clips` (job_id, scene_number, priority, 원본 이미지 경로·SHA-256, 생성 영상 경로, provider, 모델, 캐시 키, 요청 시각, 상태, 성공 여부, 길이, 소요 시간, 오류 코드, 중단 사유, 무료 한도 초과 여부, FFmpeg fallback 여부·종류, 캐시 재사용 여부) /
+  `video_motion_requests` (실제로 보낸 요청: provider, 모델, 시각, 날짜, 결과, HTTP 상태, 소요 시간).
+- 장면 상태: `ai_video_generated` · `cache_reused` · `fallback_motion` · `quota_limited` · `provider_disabled` · `generation_failed` · `asset_video`(자료가 원래 영상).
+- 작업 기록: `jobs.state_json.motion`, `data/sources/<job>_motion.json`, `render.motion`(장면별 실제 사용 소스), `production_metadata.extra_json.video_motion`.
+- 로그 (키·토큰은 출력하지 않음): `Image-to-Video Summary` — 요청 시도 수 / 성공한 AI 영상 수 / 캐시 재사용 수 / 무료 한도 초과 여부 / FFmpeg fallback 장면 수 / API 호출 중단 사유 / 최종 렌더링 결과.
+- 품질 검사 추가 (실패 시 기존처럼 업로드 금지): `duration_match`(영상 길이 = 나레이션 + 여유), `motion_sources`(모든 장면에 영상 소스), `motion_fallback`(AI 영상 없는 장면은 FFmpeg 대체), `motion_ai_composition`(합성 결과 기록), `motion_api_limits`(작업당 한도 이내 + 중단 후 요청 0), `motion_images_preserved`(원본 AI 이미지 SHA-256 변화 없음). 해상도·fps·코덱·오디오·검은 화면은 기존 검사.
+
+### 16.7 테스트 / 2026-10-17 작업 내역
+
+```bash
+PYTHONUTF8=1 .venv/Scripts/python.exe -m pytest -q tests/test_video_motion.py   # 이미지→영상 (Mock, 키 불필요)
+```
+
+- 기존 테스트 173개 통과 확인 후 구현 → 전체 **193개 통과** (Windows 11, Python 3.14.8, `PYTHONUTF8=1`). `tests/test_video_motion.py` 20개: 성공 저장·사용 / 3회 성공 후 할당량 초과 → 이후 요청 0 + 다른 무료 provider 도 호출 안 함 / 재실행 시 기존 영상 재사용(재생성 없음) / 402·잔액 부족 즉시 중단 / 인증 오류 재시도 없음 / 일시 오류 제한된 재시도 후 대체 / 속도 제한 후 성공 / 손상·짧음·검은 화면 거부 / 같은 입력 캐시 재사용 / 미검증 provider 는 HTTP 요청 0 / 유료 설정 강제 무시 / 작업당·하루 한도 / 우선순위 / 오류 분류 / CogVideoX Adapter 비동기 흐름(Mock HTTP, 결과 CDN 에 키 미전송) / AI 영상 + FFmpeg 효과 혼합 렌더링 → 1080x1920·30fps·AAC + 품질 검사 통과 / 파이프라인 단계가 예외를 올리지 않음
+- `test --offline` (실제 Edge TTS·Whisper·FFmpeg): `motion` 단계 외부 요청 0 → 8개 장면 모두 FFmpeg 움직임 효과(slow_zoom_in/parallax/slow_zoom_out/fog_overlay/pan_right/none 등) → 58.7초 영상, 기존 품질 검사 + 이미지→영상 검사 전부 통과.
+  이 실행에서 장면 기록이 SQLite 에 저장되지 않는 버그(인자 중복)를 발견해 수정하고 DB 재사용 테스트를 추가했습니다 (기록 실패는 경고만 남기고 제작은 계속되는 것도 확인).
+- 실제 Image-to-Video API 호출, 실제 GitHub Actions 실행, YouTube 업로드는 이번 작업에서 하지 않았습니다.

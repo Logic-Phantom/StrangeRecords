@@ -332,6 +332,42 @@ class VideoConfig(BaseModel):
     ai_label: AILabelConfig = Field(default_factory=AILabelConfig)
 
 
+class MotionProviderConfig(BaseModel):
+    """Image-to-Video provider 한 개의 설정. 무료 여부는 설정이 아니라 코드의 공식 조사 기록(registry)으로만 판단한다."""
+
+    name: str
+    enabled: bool = False
+    model: str = ""
+    timeout: int = 180                 # 요청 1회 제한(초)
+    max_poll_seconds: int = 300        # 비동기 작업 상태 확인 최대 시간(초)
+    poll_interval: float = 5.0
+    params: dict = Field(default_factory=dict)   # 모델 파라미터 (num_frames 등, 캐시 키에 포함)
+
+
+class VideoMotionConfig(BaseModel):
+    """기존 AI 정지 이미지 → 짧은 움직임 영상 (무료 Image-to-Video API + FFmpeg 움직임 효과 대체).
+
+    비용 안전: free_only / paid_fallback_enabled 는 코드에서 항상 true / false 로 강제한다 (설정 실수로 바뀌지 않음).
+    """
+
+    enabled: bool = True               # false 면 기존 Ken Burns 렌더링 그대로 (외부 호출 없음)
+    free_only: bool = True             # 강제 true
+    paid_fallback_enabled: bool = False  # 강제 false
+    providers: list[MotionProviderConfig] = Field(default_factory=list)
+    max_requests_per_job: int = 8
+    max_requests_per_day: int = 8
+    max_clip_seconds: float = 4
+    min_clip_seconds: float = 1.0      # 이보다 짧은 결과는 정상 영상으로 보지 않음
+    max_total_video_seconds_per_job: float = 32
+    max_consecutive_transient_failures: int = 2
+    max_retries_per_scene: int = 1     # 일시 오류(5xx/네트워크/속도 제한)만, 요청 수 한도 안에서
+    retry_waits: list[float] = Field(default_factory=lambda: [10, 30])
+    quota_stop_fallback: bool = True   # 무료 한도/크레딧/결제 오류 → 이번 작업의 외부 영상 생성 호출 전체 중단
+    cache_enabled: bool = True
+    fallback_motion: bool = True       # AI 영상이 없는 장면에 FFmpeg 움직임 효과(안개/먼지/조명/패럴랙스 등). false 면 기존 Ken Burns
+    max_slowdown: float = 1.6          # AI 영상이 장면보다 짧으면 이 배율까지 느리게 재생, 나머지는 마지막 프레임 유지
+
+
 class AudioConfig(BaseModel):
     bgm_enabled: bool = True
     bgm_volume: float = 0.18
@@ -448,6 +484,8 @@ class Secrets(BaseModel):
     youtube_api_key: str = ""
     # 선택: Google Trends 공식 API 알파 접근 권한을 받은 경우에만
     google_trends_api_key: str = ""
+    # 선택: 智谱 BigModel (CogVideoX-Flash Image-to-Video). 무료 조건 미검증 상태라 키가 있어도 호출하지 않음
+    zhipu_api_key: str = ""
 
 
 class Paths(BaseModel):
@@ -541,11 +579,16 @@ class Paths(BaseModel):
     def reports(self) -> Path:
         return self.data / "reports"
 
+    @property
+    def motion_cache(self) -> Path:
+        return self.output / "motion_cache"
+
     def ensure(self) -> None:
         for path in (
             self.music, self.sfx, self.local_images, self.local_videos, self.fonts,
             self.topics, self.scripts, self.metadata, self.sources, self.models,
             self.audio, self.videos, self.subtitles, self.thumbnails, self.work, self.logs, self.reports,
+            self.motion_cache,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
@@ -562,6 +605,7 @@ class Settings(BaseModel):
     assets: AssetsConfig = Field(default_factory=AssetsConfig)
     subtitle: SubtitleConfig = Field(default_factory=SubtitleConfig)
     video: VideoConfig = Field(default_factory=VideoConfig)
+    video_motion: VideoMotionConfig = Field(default_factory=VideoMotionConfig)
     audio: AudioConfig = Field(default_factory=AudioConfig)
     quality: QualityConfig = Field(default_factory=QualityConfig)
     review: ReviewConfig = Field(default_factory=ReviewConfig)
@@ -604,6 +648,7 @@ def load_settings(config_path: Path | None = None, env_path: Path | None = None)
         youtube_client_secret=os.getenv("YOUTUBE_CLIENT_SECRET", ""),
         youtube_api_key=os.getenv("YOUTUBE_API_KEY", ""),
         google_trends_api_key=os.getenv("GOOGLE_TRENDS_API_KEY", ""),
+        zhipu_api_key=os.getenv("ZHIPU_API_KEY", ""),
     )
     # 운영 중 빠르게 바꿀 수 있도록 일부 값은 환경변수로 덮어쓸 수 있다.
     if os.getenv("GEMINI_MODEL"):

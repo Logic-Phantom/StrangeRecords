@@ -12,6 +12,8 @@
 #   STATE_DB_KEY        (권장) pipeline-state 브랜치의 DB 를 AES-256 으로 암호화하는 비밀번호.
 #                       공개 저장소에서는 DB 에 들어가는 YouTube Analytics 성과(비공개 지표)가 누구에게나 보이므로 설정 권장
 #   GOOGLE_TRENDS_API_KEY (선택) Google Trends 공식 API 알파 승인 시에만
+#   ZHIPU_API_KEY       (선택) 이미지→영상 CogVideoX-Flash. 무료 조건 미검증이라 현재는 넣어도 호출하지 않음.
+#                       이미지→영상은 검증된 무료 provider 가 없거나 한도에 걸리면 FFmpeg 움직임 효과로 계속 제작한다 (작업 실패 아님)
 #
 # 주제 중복 방지/하루 1개 정책/성과 이력에 쓰는 SQLite DB 는 pipeline-state 브랜치에 저장해 다음 실행에 이어 쓴다.
 # 실행 순서: DB 복원 → (보조) 이전 영상 성과 수집 → 오늘 영상 제작(트렌드·성과 반영 주제 선정 → 제작 → 검수) → 업로드 → DB 저장
@@ -60,6 +62,7 @@ jobs:
       PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
       YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
       GOOGLE_TRENDS_API_KEY: ${{ secrets.GOOGLE_TRENDS_API_KEY }}
+      ZHIPU_API_KEY: ${{ secrets.ZHIPU_API_KEY }}
       STATE_DB_KEY: ${{ secrets.STATE_DB_KEY }}
       COMMAND: ${{ inputs.command || 'today' }}
       REMAKE_JOB: ${{ inputs.job }}

@@ -235,6 +235,52 @@ CREATE TABLE IF NOT EXISTS video_comments (
 CREATE INDEX IF NOT EXISTS idx_comments_job ON video_comments(job_id);
 CREATE INDEX IF NOT EXISTS idx_comments_status ON video_comments(status);
 """),
+    (3, "video_motion", """
+-- 장면별 이미지→영상 결과 (작업·장면당 1행, 재실행 시 갱신)
+-- status: ai_video_generated | cache_reused | fallback_motion | quota_limited | provider_disabled | generation_failed
+CREATE TABLE IF NOT EXISTS video_motion_clips (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id             TEXT NOT NULL,
+    scene_number       INTEGER NOT NULL,
+    priority           INTEGER,
+    image_path         TEXT,
+    image_sha256       TEXT,
+    video_path         TEXT,
+    provider           TEXT,
+    model              TEXT,
+    cache_key          TEXT,
+    requested_at       TEXT,
+    status             TEXT NOT NULL,
+    success            INTEGER NOT NULL DEFAULT 0,
+    clip_seconds       REAL,
+    latency_s          REAL,
+    error_code         TEXT,
+    stop_reason        TEXT,
+    quota_limited      INTEGER NOT NULL DEFAULT 0,
+    fallback_applied   INTEGER NOT NULL DEFAULT 0,
+    fallback_motion    TEXT,
+    cache_reused       INTEGER NOT NULL DEFAULT 0,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    UNIQUE (job_id, scene_number)
+);
+CREATE INDEX IF NOT EXISTS idx_motion_clips_key ON video_motion_clips(cache_key);
+
+-- 실제로 보낸 외부 Image-to-Video 요청 (하루 요청 한도 계산용, 실패한 요청도 기록)
+CREATE TABLE IF NOT EXISTS video_motion_requests (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id         TEXT,
+    scene_number   INTEGER,
+    provider       TEXT NOT NULL,
+    model          TEXT,
+    requested_at   TEXT NOT NULL,
+    request_date   TEXT NOT NULL,
+    outcome        TEXT NOT NULL,
+    http_status    INTEGER,
+    latency_s      REAL
+);
+CREATE INDEX IF NOT EXISTS idx_motion_requests_date ON video_motion_requests(request_date);
+"""),
 ]
 
 
